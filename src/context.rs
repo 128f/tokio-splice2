@@ -27,9 +27,9 @@ pub struct SpliceIoCtx<R, W> {
     pipe: Pipe,
 
     /// Bytes that have been read from `R` into pipe write side.
-    has_read: usize,
+    bytes_read: usize,
     /// Bytes that have been written to `W` from pipe read side.
-    has_written: usize,
+    bytes_written: usize,
     /// Whether need to flush `W` after splicing.
     need_flush: bool,
 
@@ -43,8 +43,8 @@ impl<R, W> fmt::Debug for SpliceIoCtx<R, W> {
             .field("offset", &self.offset)
             .field("size_to_splice", &self.size_to_splice)
             .field("pipe", &self.pipe)
-            .field("has_read", &self.has_read)
-            .field("has_written", &self.has_written)
+            .field("bytes_read", &self.bytes_read)
+            .field("bytes_written", &self.bytes_written)
             .field("need_flush", &self.need_flush)
             .finish()
     }
@@ -57,8 +57,8 @@ impl<R, W> SpliceIoCtx<R, W> {
             offset: Offset::None,
             size_to_splice: isize::MAX as usize,
             pipe: Pipe::new()?,
-            has_read: 0,
-            has_written: 0,
+            bytes_read: 0,
+            bytes_written: 0,
             need_flush: false,
             r: PhantomData,
             w: PhantomData,
@@ -171,7 +171,7 @@ impl<R, W> SpliceIoCtx<R, W> {
     }
 
     #[inline]
-    /// Set the pipe size.
+    /// Set the pipe size in bytes.
     ///
     /// See [`Pipe`]'s top level docs for more details.
     ///
@@ -192,20 +192,20 @@ impl<R, W> SpliceIoCtx<R, W> {
     #[must_use]
     #[inline]
     /// Returns bytes that have been read from `R`.
-    pub const fn has_read(&self) -> usize {
-        self.has_read
+    pub const fn bytes_read(&self) -> usize {
+        self.bytes_read
     }
 
     #[must_use]
     #[inline]
     /// Returns bytes that have been written to `W`.
-    pub const fn has_written(&self) -> usize {
-        self.has_written
+    pub const fn bytes_written(&self) -> usize {
+        self.bytes_written
     }
 
     #[must_use]
     #[inline]
-    /// Returns the pipe size.
+    /// Returns the pipe size in bytes.
     pub const fn pipe_size(&self) -> NonZeroUsize {
         self.pipe.size()
     }
@@ -233,7 +233,7 @@ impl<R, W> SpliceIoCtx<R, W> {
     /// Returns the traffic result (client TX one).
     pub const fn traffic_client_tx(&self, error: Option<io::Error>) -> TrafficResult {
         TrafficResult {
-            tx: self.has_written,
+            tx: self.bytes_written,
             rx: 0,
             error,
         }
@@ -245,7 +245,7 @@ impl<R, W> SpliceIoCtx<R, W> {
     pub const fn traffic_client_rx(&self, error: Option<io::Error>) -> TrafficResult {
         TrafficResult {
             tx: 0,
-            rx: self.has_read,
+            rx: self.bytes_read,
             error,
         }
     }
@@ -299,7 +299,7 @@ where
 
         let Some(size_rest_to_splice) = self
             .size_to_splice
-            .checked_sub(self.has_read)
+            .checked_sub(self.bytes_read)
             .map(|l| match ideal_len {
                 Some(len) => len.get().min(l),
                 None => l,
@@ -332,7 +332,7 @@ where
                 .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
             }) {
                 Ok(Some(drained)) => {
-                    self.has_read += drained.get();
+                    self.bytes_read += drained.get();
                     self.size_to_splice -= drained.get();
 
                     break Poll::Ready(Ok(Drained::Some(drained)));
@@ -387,8 +387,8 @@ where
         };
 
         loop {
-            let Some(size_need_to_be_written) = self.has_read.checked_sub(self.has_written) else {
-                // If `has_written` is larger than `has_read`, may never stop.
+            let Some(size_need_to_be_written) = self.bytes_read.checked_sub(self.bytes_written) else {
+                // If `bytes_written` is larger than `bytes_read`, may never stop.
                 // In particular, user's wrong implementation returning
                 // incorrect written length may lead to thread blocking.
 
@@ -396,7 +396,7 @@ where
 
                 break Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::Other,
-                    "`has_written` larger than `has_read`",
+                    "`bytes_written` larger than `bytes_read`",
                 )));
             };
 
@@ -422,9 +422,9 @@ where
                 .map(NonZeroUsize::new)
                 .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
             }) {
-                Ok(Some(has_written)) => {
+                Ok(Some(bytes_written)) => {
                     // Go to next loop to check if there is more data
-                    self.has_written += has_written.get();
+                    self.bytes_written += bytes_written.get();
                     self.need_flush = true;
                 }
                 Ok(None) => {

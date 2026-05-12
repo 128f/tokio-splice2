@@ -269,7 +269,7 @@ impl<const ENABLED: bool> RateLimiter<ENABLED> {
         tracing::instrument(level = "TRACE", ret)
     )]
     /// Check if the rate limiter allows the request to proceed, or sleep.
-    pub(crate) fn check(&mut self, has_read: NonZeroUsize) -> RateLimitResult {
+    pub(crate) fn check(&mut self, bytes_read: NonZeroUsize) -> RateLimitResult {
         if !ENABLED {
             // Rate limiter is disabled, always accept.
             return RateLimitResult::Accepted;
@@ -305,7 +305,7 @@ impl<const ENABLED: bool> RateLimiter<ENABLED> {
 
         // Try to acquire the tokens.
         {
-            *current_tokens -= has_read.get() as f64;
+            *current_tokens -= bytes_read.get() as f64;
 
             if current_tokens.is_sign_negative() {
                 let insufficient_tokens = current_tokens.abs();
