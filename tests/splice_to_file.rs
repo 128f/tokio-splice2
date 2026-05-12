@@ -130,7 +130,7 @@ async fn splice_to_file(
         f_offset_end = None;
     }
 
-    tokio_splice2::SpliceIoCtx::prepare_writing_file(w_len, f_offset_start, f_offset_end)?
+    tokio_splice2::SpliceIoCtx::with_output_file(w_len, f_offset_start, f_offset_end)?
         .into_io()
         .execute(r, &mut w)
         .await;

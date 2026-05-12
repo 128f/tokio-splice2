@@ -250,7 +250,7 @@ where
                         this.state.as_mut()
                     );
 
-                    if this.ctx.finished() {
+                    if this.ctx.is_finished() {
                         // All done, flush and shutdown `W`.
                         this.state.set(TransferState::Terminating);
                     } else {

@@ -31,7 +31,7 @@ pub use rate::RateLimit;
 #[inline]
 /// Copies data from `r` to `w` using `splice(2)`.
 ///
-/// See [`SpliceIoCtx::prepare`] and [`SpliceIo::execute`] for more details; see
+/// See [`SpliceIoCtx::new`] and [`SpliceIo::execute`] for more details; see
 /// the [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -42,7 +42,7 @@ where
     R: io::AsyncReadFd + IsNotFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(context::SpliceIoCtx::prepare()?
+    Ok(context::SpliceIoCtx::new()?
         .into_io()
         .execute(r, w)
         .await)
@@ -51,7 +51,7 @@ where
 #[inline]
 /// Copies data from file `r` to `w` using `splice(2)`.
 ///
-/// See [`SpliceIoCtx::prepare_reading_file`] for more details; see the
+/// See [`SpliceIoCtx::with_input_file`] for more details; see the
 /// [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -70,7 +70,7 @@ where
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
     Ok(
-        context::SpliceIoCtx::prepare_reading_file(f_len, f_offset_start, f_offset_end)?
+        context::SpliceIoCtx::with_input_file(f_len, f_offset_start, f_offset_end)?
             .into_io()
             .execute(r, w)
             .await,
@@ -84,7 +84,7 @@ where
 /// data read to the opposing stream. This happens in both directions
 /// concurrently.
 ///
-/// See [`SpliceIoCtx::prepare`] and [`SpliceBidiIo::execute`] for more details;
+/// See [`SpliceIoCtx::new`] and [`SpliceBidiIo::execute`] for more details;
 /// see the [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -99,8 +99,8 @@ where
     B: io::AsyncReadFd + io::AsyncWriteFd + IsNotFile + Unpin,
 {
     Ok(io::SpliceBidiIo {
-        io_sl2sr: context::SpliceIoCtx::prepare()?.into_io(),
-        io_sr2sl: context::SpliceIoCtx::prepare()?.into_io(),
+        io_sl2sr: context::SpliceIoCtx::new()?.into_io(),
+        io_sr2sl: context::SpliceIoCtx::new()?.into_io(),
     }
     .execute(sl, sr)
     .await)

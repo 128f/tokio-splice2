@@ -52,7 +52,7 @@ impl<R, W> fmt::Debug for SpliceIoCtx<R, W> {
 
 impl<R, W> SpliceIoCtx<R, W> {
     #[inline]
-    fn _prepare() -> io::Result<Self> {
+    fn new_inner() -> io::Result<Self> {
         Ok(Self {
             offset: Offset::None,
             size_to_splice: isize::MAX as usize,
@@ -73,12 +73,12 @@ impl<R, W> SpliceIoCtx<R, W> {
     /// ## Errors
     ///
     /// * Create pipe failed.
-    pub fn prepare() -> io::Result<Self>
+    pub fn new() -> io::Result<Self>
     where
         R: IsNotFile,
         W: IsNotFile,
     {
-        Self::_prepare()
+        Self::new_inner()
     }
 
     #[must_use]
@@ -88,8 +88,8 @@ impl<R, W> SpliceIoCtx<R, W> {
     /// ## Notice
     ///
     /// You MAY want need
-    /// [`prepare_reading_file`](Self::prepare_reading_file) or
-    /// [`prepare_writing_file`](Self::prepare_writing_file) if `R` or `W` is a
+    /// [`with_input_file`](Self::with_input_file) or
+    /// [`with_output_file`](Self::with_output_file) if `R` or `W` is a
     /// file.
     pub fn with_target_len(self, size_to_splice: usize) -> Self
     where
@@ -118,7 +118,7 @@ impl<R, W> SpliceIoCtx<R, W> {
     ///
     /// * Invalid offset.
     /// * Create pipe failed.
-    pub fn prepare_reading_file(
+    pub fn with_input_file(
         f_len: u64,
         f_offset_start: Option<u64>,
         f_offset_end: Option<u64>,
@@ -132,7 +132,7 @@ impl<R, W> SpliceIoCtx<R, W> {
             size_to_splice: Offset::calc_size_to_splice(f_len, f_offset_start, f_offset_end)?
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file size too large"))?,
-            ..Self::_prepare()?
+            ..Self::new_inner()?
         })
     }
 
@@ -152,7 +152,7 @@ impl<R, W> SpliceIoCtx<R, W> {
     ///
     /// * Invalid offset.
     /// * Create pipe failed.
-    pub fn prepare_writing_file(
+    pub fn with_output_file(
         f_len: u64,
         f_offset_start: Option<u64>,
         f_offset_end: Option<u64>,
@@ -166,7 +166,7 @@ impl<R, W> SpliceIoCtx<R, W> {
             size_to_splice: Offset::calc_size_to_splice(f_len, f_offset_start, f_offset_end)?
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file size too large"))?,
-            ..Self::_prepare()?
+            ..Self::new_inner()?
         })
     }
 
@@ -182,7 +182,7 @@ impl<R, W> SpliceIoCtx<R, W> {
     /// For more details, see [`fcntl(2)`].
     ///
     /// [`fcntl(2)`]: https://man7.org/linux/man-pages/man2/fcntl.2.html.
-    pub fn set_pipe_size(mut self, pipe_size: usize) -> io::Result<Self> {
+    pub fn with_pipe_size(mut self, pipe_size: usize) -> io::Result<Self> {
         self.pipe.set_pipe_size(pipe_size)?;
         Ok(self)
     }
@@ -224,7 +224,7 @@ impl<R, W> SpliceIoCtx<R, W> {
 
     #[inline]
     /// Returns if draining and pumping are both finished.
-    pub(crate) const fn finished(&self) -> bool {
+    pub(crate) const fn is_finished(&self) -> bool {
         self.pipe.splice_drain_finished() && self.pipe.splice_pump_finished()
     }
 
