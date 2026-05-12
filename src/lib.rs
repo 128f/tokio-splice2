@@ -42,8 +42,7 @@ where
     R: io::AsyncReadFd + IsNotFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(context::SpliceIoCtx::new()?
-        .into_io()
+    Ok(io::SpliceIo::from(context::SpliceIoCtx::new()?)
         .execute(r, w)
         .await)
 }
@@ -69,12 +68,13 @@ where
     R: io::AsyncReadFd + IsFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(
-        context::SpliceIoCtx::with_input_file(f_len, f_offset_start, f_offset_end)?
-            .into_io()
-            .execute(r, w)
-            .await,
-    )
+    Ok(io::SpliceIo::from(context::SpliceIoCtx::with_input_file(
+        f_len,
+        f_offset_start,
+        f_offset_end,
+    )?)
+    .execute(r, w)
+    .await)
 }
 
 #[inline]
@@ -99,8 +99,8 @@ where
     B: io::AsyncReadFd + io::AsyncWriteFd + IsNotFile + Unpin,
 {
     Ok(io::SpliceBidiIo {
-        io_sl2sr: context::SpliceIoCtx::new()?.into_io(),
-        io_sr2sl: context::SpliceIoCtx::new()?.into_io(),
+        io_sl2sr: context::SpliceIoCtx::new()?.into(),
+        io_sr2sl: context::SpliceIoCtx::new()?.into(),
     }
     .execute(sl, sr)
     .await)

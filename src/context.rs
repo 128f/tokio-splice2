@@ -8,7 +8,7 @@ use std::{fmt, io};
 
 use rustix::pipe::{splice, SpliceFlags};
 
-use crate::io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceIo};
+use crate::io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile};
 use crate::pipe::Pipe;
 use crate::traffic::TrafficResult;
 use crate::utils::{Drained, Offset};
@@ -250,12 +250,6 @@ impl<R, W> SpliceIoCtx<R, W> {
         }
     }
 
-    #[must_use]
-    #[inline]
-    /// Builder pattern version of [`SpliceIo::new`].
-    pub fn into_io(self) -> SpliceIo<R, W> {
-        SpliceIo::new(self)
-    }
 }
 
 impl<R, W> SpliceIoCtx<R, W>

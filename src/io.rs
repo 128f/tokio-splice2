@@ -57,10 +57,8 @@ impl<R, W, const RATE_LIMITER_IS_ENABLED: bool> ops::Deref
     }
 }
 
-impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
-    #[must_use]
-    /// Create a new `SpliceIo` instance with ctx and pinned `R` / `W`.
-    pub fn new(ctx: SpliceIoCtx<R, W>) -> Self {
+impl<R, W> From<SpliceIoCtx<R, W>> for SpliceIo<R, W, RATE_LIMITER_DISABLED> {
+    fn from(ctx: SpliceIoCtx<R, W>) -> Self {
         SpliceIo {
             ctx: CachePadded::new(ctx),
             r: PhantomData,
@@ -70,7 +68,9 @@ impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
             state: TransferState::Draining,
         }
     }
+}
 
+impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
     #[cfg(feature = "feat-rate-limit")]
     /// Apply rate limitation during the splice I/O.
     ///
