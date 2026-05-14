@@ -1,5 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![cfg_attr(feature = "feat-nightly", feature(cold_path))]
 #![cfg_attr(debug_assertions, allow(clippy::unreachable))]
 
 pub mod context;

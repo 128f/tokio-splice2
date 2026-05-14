@@ -1,7 +1,6 @@
 //! `splice(2)` I/O implementation.
 
 use std::future::poll_fn;
-use std::marker::PhantomData;
 #[cfg(not(feature = "feat-rate-limit"))]
 use std::marker::PhantomPinned;
 use std::os::fd::AsFd;
@@ -9,7 +8,6 @@ use std::pin::{pin, Pin};
 use std::task::{ready, Context, Poll};
 use std::{io, ops};
 
-use crossbeam_utils::CachePadded;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite, Interest};
 use tokio::net::{TcpStream, UnixStream};
@@ -34,10 +32,7 @@ pub struct SpliceIo<R, W, const RATE_LIMITER_IS_ENABLED: bool = RATE_LIMITER_DIS
     /// Context for the splice I/O operation.
     ///
     /// See [`SpliceIoCtx`] for more details.
-    ctx: CachePadded<SpliceIoCtx<R, W>>,
-
-    r: PhantomData<R>,
-    w: PhantomData<W>,
+    ctx: SpliceIoCtx<R, W>,
 
     #[cfg(feature = "feat-rate-limit")]
     /// To limit the transfer speed.
@@ -60,9 +55,7 @@ impl<R, W, const RATE_LIMITER_IS_ENABLED: bool> ops::Deref
 impl<R, W> From<SpliceIoCtx<R, W>> for SpliceIo<R, W, RATE_LIMITER_DISABLED> {
     fn from(ctx: SpliceIoCtx<R, W>) -> Self {
         SpliceIo {
-            ctx: CachePadded::new(ctx),
-            r: PhantomData,
-            w: PhantomData,
+            ctx,
             #[cfg(feature = "feat-rate-limit")]
             rate_limiter: RateLimiter::empty(),
             state: TransferState::FromSource,
@@ -78,8 +71,6 @@ impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
     pub fn with_rate_limit(self, limit: RateLimit) -> SpliceIo<R, W, RATE_LIMITER_ENABLED> {
         SpliceIo {
             ctx: self.ctx,
-            r: self.r,
-            w: self.w,
             rate_limiter: RateLimiter::new(limit),
             state: self.state,
         }
@@ -272,15 +263,9 @@ where
                     if error.is_some() {
                         // Best effort to shutdown the writer.
                         ready!(w.as_mut().poll_shutdown(cx))?;
-                    } else {
-                        #[cfg(feature = "feat-nightly")]
-                        std::hint::cold_path();
                     }
 
                     let Some(error) = error.take() else {
-                        #[cfg(feature = "feat-nightly")]
-                        std::hint::cold_path();
-
                         break Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::Other,
                             "`poll_execute()` called after error returned",

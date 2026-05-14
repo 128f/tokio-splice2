@@ -30,8 +30,6 @@ pub struct SpliceIoCtx<R, W> {
     bytes_read: usize,
     /// Bytes that have been written to `W` from pipe read side.
     bytes_written: usize,
-    /// Whether need to flush `W` after splicing.
-    need_flush: bool,
 
     r: PhantomData<R>,
     w: PhantomData<W>,
@@ -45,7 +43,6 @@ impl<R, W> fmt::Debug for SpliceIoCtx<R, W> {
             .field("pipe", &self.pipe)
             .field("bytes_read", &self.bytes_read)
             .field("bytes_written", &self.bytes_written)
-            .field("need_flush", &self.need_flush)
             .finish()
     }
 }
@@ -59,7 +56,6 @@ impl<R, W> SpliceIoCtx<R, W> {
             pipe: Pipe::new()?,
             bytes_read: 0,
             bytes_written: 0,
-            need_flush: false,
             r: PhantomData,
             w: PhantomData,
         })
@@ -209,16 +205,6 @@ impl<R, W> SpliceIoCtx<R, W> {
     pub const fn pipe_size(&self) -> NonZeroUsize {
         self.pipe.size()
     }
-
-    // #[inline]
-    // pub(crate) const fn is_write_side_done(&self) -> bool {
-    //     self.pipe.is_write_side_done()
-    // }
-
-    // #[inline]
-    // pub(crate) const fn is_read_side_done(&self) -> bool {
-    //     self.pipe.is_read_side_done()
-    // }
 
     #[inline]
     /// Returns if both sides of the pipe are done.
@@ -417,7 +403,6 @@ where
                 Ok(Some(bytes_written)) => {
                     // Go to next loop to check if there is more data
                     self.bytes_written += bytes_written.get();
-                    self.need_flush = true;
                 }
                 Ok(None) => {
                     break Poll::Ready(Err(io::ErrorKind::WriteZero.into()));

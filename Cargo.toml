@@ -49,10 +49,7 @@ feat-rate-limit = ["tokio/time"]
 # Perform brutal shutdown instead of graceful shutdown.
 feat-brutal-shutdown = []
 
-# Enable nightly Rust feature
-feat-nightly = []
-
-# # Cache `Pipe`, avoid creating new pipe for each ctx. 
+# # Cache `Pipe`, avoid creating new pipe for each ctx.
 # feat-pipe-pool = ["dep:parking_lot", "tokio/sync"]
 
 [lints]
