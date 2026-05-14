@@ -133,17 +133,6 @@ impl Pipe {
 
     #[must_use]
     #[inline]
-    pub(crate) const fn is_read_side_done(&self) -> bool {
-        self.read_side_fd.is_none()
-    }
-
-    #[inline]
-    pub(crate) fn set_read_side_done(&mut self) {
-        self.read_side_fd = None;
-    }
-
-    #[must_use]
-    #[inline]
     /// Returns the size of the pipe, in bytes.
     pub const fn size(&self) -> NonZeroUsize {
         self.size

@@ -10,7 +10,7 @@ use rustix::pipe::{splice, SpliceFlags};
 use crate::io::{IsFile, IsNotFile};
 use crate::pipe::Pipe;
 use crate::traffic::TrafficResult;
-use crate::utils::{FromSource, Offset};
+use crate::utils::Offset;
 
 /// State for a `splice(2)` operation: the pipe used as the kernel-side buffer,
 /// the byte counters, and any file offset.
@@ -205,7 +205,7 @@ impl<R, W> Splicer<R, W> {
     #[inline]
     /// Returns if both sides of the pipe are done.
     pub(crate) const fn is_finished(&self) -> bool {
-        self.pipe.is_write_side_done() && self.pipe.is_read_side_done()
+        self.pipe.is_write_side_done() && self.bytes_read == self.bytes_written
     }
 
     #[must_use]

@@ -2,7 +2,7 @@
 
 use std::future::poll_fn;
 use std::os::fd::AsFd;
-use std::pin::{pin, Pin};
+use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::{io, ops};
 
@@ -72,11 +72,7 @@ where
     ///
     /// This is a convenient `async fn` version of
     /// [`SpliceIo::poll_execute`].
-    pub async fn execute(mut self, r: &mut R, w: &mut W) -> TrafficResult
-    where
-        R: Unpin,
-        W: Unpin,
-    {
+    pub async fn execute(mut self, r: &mut R, w: &mut W) -> TrafficResult {
         let error = poll_fn(|cx| self.poll_execute(cx, r, w)).await.err();
 
         self.splicer.traffic_client_tx(error)
@@ -104,8 +100,8 @@ where
     pub fn poll_execute(
         &mut self,
         cx: &mut Context<'_>,
-        mut r: &mut R,
-        mut w: &mut W,
+        r: &mut R,
+        w: &mut W,
     ) -> Poll<io::Result<()>> {
         macro_rules! ready_or_cleanup {
             ($e:expr, $next:ident) => {
@@ -154,8 +150,8 @@ where
                 TransferState::Drain => {
                     // check if we're ready to write
                     ready!(w.poll_write_ready(cx))?;
-                    // try to read, if EAGAIN then loop back and wait again
-                    // side-effect: try_io_read will clear the readiness state if it returns EAGAIN, so we won't busy loop
+                    // try to write, if EAGAIN then loop back and wait again
+                    // side-effect: try_io_write will clear the readiness state if it returns EAGAIN, so we won't busy loop
                     let write_result = w.try_io_write(|| self.splicer.try_splice_to_dest(&*w));
                     match write_result {
                         Ok(()) => {
@@ -172,19 +168,19 @@ where
                     }
                 }
                 TransferState::Flushing => {
-                    ready_or_cleanup!(w.poll_flush(cx), next_state);
+                    ready_or_cleanup!(Pin::new(&mut *w).poll_flush(cx), next_state);
 
                     next_state = Some(TransferState::Fill);
                 }
                 TransferState::Terminating => {
-                    ready_or_cleanup!(w.poll_shutdown(cx), next_state);
+                    ready_or_cleanup!(Pin::new(&mut *w).poll_shutdown(cx), next_state);
 
                     next_state = Some(TransferState::Finished);
                 }
                 TransferState::Faulted { error } => {
                     if error.is_some() {
                         // Best effort to shutdown the writer.
-                        ready!(w.poll_shutdown(cx))?;
+                        ready!(Pin::new(&mut *w).poll_shutdown(cx))?;
                     }
 
                     let Some(error) = error.take() else {
@@ -264,8 +260,8 @@ where
     pub fn poll_execute(
         &mut self,
         cx: &mut Context<'_>,
-        mut sl: &mut SL,
-        mut sr: &mut SR,
+        sl: &mut SL,
+        sr: &mut SR,
     ) -> Poll<io::Result<()>> {
         let io_sl2sr_ret = self.io_sl2sr.poll_execute(cx, sl, sr);
         let io_sr2sl_ret = self.io_sr2sl.poll_execute(cx, sr, sl);
@@ -302,7 +298,7 @@ impl<T> IsNotFile for Pin<&mut T> where T: IsNotFile {}
 ///
 /// This trait extends both `AsyncRead` and `AsFd`, providing the necessary
 /// methods for async reading operations with splice.
-pub trait AsyncReadFd: AsyncRead + AsFd {
+pub trait AsyncReadFd: AsyncRead + AsFd + Unpin {
     #[doc(hidden)]
     fn poll_read_ready(&self, _cx: &mut Context<'_>) -> Poll<io::Result<()>>;
 
@@ -310,7 +306,7 @@ pub trait AsyncReadFd: AsyncRead + AsFd {
     fn try_io_read<R>(&self, f: impl FnOnce() -> io::Result<R>) -> io::Result<R>;
 }
 
-impl<T: AsyncReadFd + Unpin> AsyncReadFd for &mut T {
+impl<T: AsyncReadFd> AsyncReadFd for &mut T {
     #[inline]
     fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         (**self).poll_read_ready(cx)
@@ -326,7 +322,7 @@ impl<T: AsyncReadFd + Unpin> AsyncReadFd for &mut T {
 ///
 /// This trait extends both `AsyncWrite` and `AsFd`, providing the necessary
 /// methods for async writing operations with splice.
-pub trait AsyncWriteFd: AsyncWrite + AsFd {
+pub trait AsyncWriteFd: AsyncWrite + AsFd + Unpin {
     #[doc(hidden)]
     fn poll_write_ready(&self, _cx: &mut Context<'_>) -> Poll<io::Result<()>>;
 
@@ -334,7 +330,7 @@ pub trait AsyncWriteFd: AsyncWrite + AsFd {
     fn try_io_write<R>(&self, f: impl FnOnce() -> io::Result<R>) -> io::Result<R>;
 }
 
-impl<T: AsyncWriteFd + Unpin> AsyncWriteFd for &mut T {
+impl<T: AsyncWriteFd> AsyncWriteFd for &mut T {
     #[inline]
     fn poll_write_ready(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         (**self).poll_write_ready(cx)

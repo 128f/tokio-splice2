@@ -1,7 +1,6 @@
 //! Some utils.
 
 use std::io;
-use std::num::NonZeroUsize;
 
 #[derive(Debug)]
 pub(crate) enum Offset {
@@ -67,11 +66,3 @@ impl Offset {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FromSource {
-    /// New data has been read from `r` into pipe.
-    Some(NonZeroUsize),
-
-    /// No more data can be read from `r` into pipe.
-    Done,
-}
