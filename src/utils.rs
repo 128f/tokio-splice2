@@ -68,11 +68,10 @@ impl Offset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Drained {
+pub(crate) enum FromSource {
     /// New data has been read from `r` into pipe.
     Some(NonZeroUsize),
 
-    /// Indicates that the draining process is complete and no more data can be
-    /// read from the `r` into pipe.
+    /// No more data can be read from `r` into pipe.
     Done,
 }

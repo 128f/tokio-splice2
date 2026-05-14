@@ -21,7 +21,7 @@ use crate::rate::RATE_LIMITER_DISABLED;
 #[cfg(feature = "feat-rate-limit")]
 use crate::rate::{RateLimit, RateLimitResult, RateLimiter, RATE_LIMITER_ENABLED};
 use crate::traffic::TrafficResult;
-use crate::utils::Drained;
+use crate::utils::FromSource;
 
 #[pin_project::pin_project]
 #[derive(Debug)]
@@ -65,7 +65,7 @@ impl<R, W> From<SpliceIoCtx<R, W>> for SpliceIo<R, W, RATE_LIMITER_DISABLED> {
             w: PhantomData,
             #[cfg(feature = "feat-rate-limit")]
             rate_limiter: RateLimiter::empty(),
-            state: TransferState::Draining,
+            state: TransferState::FromSource,
         }
     }
 }
@@ -89,8 +89,8 @@ impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
 #[derive(Debug)]
 #[pin_project::pin_project(project = TransferStateProj)]
 enum TransferState {
-    /// Draining data from `R` to pipe.
-    Draining,
+    /// Moving data from `R` into the pipe.
+    FromSource,
 
     #[cfg_attr(not(feature = "feat-rate-limit"), allow(dead_code))]
     /// Rate limiter is throttling the I/O operations.
@@ -106,8 +106,8 @@ enum TransferState {
         _pinned: PhantomPinned,
     },
 
-    /// Pumping data from pipe to `W`.
-    Pumping,
+    /// Moving data from the pipe to `W`.
+    ToDest,
 
     /// Flushing buffered data of `W`.
     Flushing,
@@ -199,7 +199,7 @@ where
             let mut this = self.as_mut().project();
 
             match this.state.as_mut().project() {
-                TransferStateProj::Draining => {
+                TransferStateProj::FromSource => {
                     #[cfg(feature = "feat-rate-limit")]
                     let ideal_len = this.rate_limiter.ideal_len(this.ctx.pipe_size());
 
@@ -207,14 +207,14 @@ where
                     let ideal_len = None;
 
                     match ready_or_cleanup!(
-                        this.ctx.poll_splice_drain(cx, r.as_mut(), ideal_len),
+                        this.ctx.poll_splice_from_source(cx, r.as_mut(), ideal_len),
                         this.state.as_mut()
                     ) {
-                        Drained::Some(_drained) => {
+                        FromSource::Some(_bytes) => {
                             #[cfg(feature = "feat-rate-limit")]
                             {
                                 #[allow(clippy::used_underscore_binding)]
-                                match this.rate_limiter.check(_drained) {
+                                match this.rate_limiter.check(_bytes) {
                                     RateLimitResult::Accepted => {}
                                     RateLimitResult::Throttled { now, dur } => {
                                         this.state.as_mut().set(TransferState::Throttled {
@@ -225,10 +225,10 @@ where
                                 }
                             }
                         }
-                        Drained::Done => {}
+                        FromSource::Done => {}
                     }
 
-                    this.state.set(TransferState::Pumping);
+                    this.state.set(TransferState::ToDest);
                 }
                 #[cfg(feature = "feat-rate-limit")]
                 TransferStateProj::Throttled { sleep } => {
@@ -236,17 +236,17 @@ where
 
                     ready!(sleep.poll(cx));
 
-                    // After throttled, we shall continue to pump data from pipe to `W`.
-                    this.state.set(TransferState::Pumping);
+                    // After throttling, continue moving data from the pipe to `W`.
+                    this.state.set(TransferState::ToDest);
                 }
                 #[cfg(not(feature = "feat-rate-limit"))]
                 TransferStateProj::Throttled { _pinned } => {
                     // Actually, this branch should never be reached.
-                    this.state.set(TransferState::Pumping);
+                    this.state.set(TransferState::ToDest);
                 }
-                TransferStateProj::Pumping => {
+                TransferStateProj::ToDest => {
                     ready_or_cleanup!(
-                        this.ctx.poll_splice_pump(cx, w.as_mut()),
+                        this.ctx.poll_splice_to_dest(cx, w.as_mut()),
                         this.state.as_mut()
                     );
 
@@ -254,14 +254,14 @@ where
                         // All done, flush and shutdown `W`.
                         this.state.set(TransferState::Terminating);
                     } else {
-                        // Flush `W` after pumping data.
+                        // Flush `W` after writing to dest.
                         this.state.set(TransferState::Flushing);
                     }
                 }
                 TransferStateProj::Flushing => {
                     ready_or_cleanup!(w.as_mut().poll_flush(cx), this.state.as_mut());
 
-                    this.state.set(TransferState::Draining);
+                    this.state.set(TransferState::FromSource);
                 }
                 TransferStateProj::Terminating => {
                     ready_or_cleanup!(w.as_mut().poll_shutdown(cx), this.state.as_mut());

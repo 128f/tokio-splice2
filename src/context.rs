@@ -11,7 +11,7 @@ use rustix::pipe::{splice, SpliceFlags};
 use crate::io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile};
 use crate::pipe::Pipe;
 use crate::traffic::TrafficResult;
-use crate::utils::{Drained, Offset};
+use crate::utils::{FromSource, Offset};
 
 /// Splice IO context.
 pub struct SpliceIoCtx<R, W> {
@@ -211,21 +211,19 @@ impl<R, W> SpliceIoCtx<R, W> {
     }
 
     // #[inline]
-    // /// Returns if splice drain is finished.
-    // pub(crate) const fn splice_drain_finished(&self) -> bool {
-    //     self.pipe.splice_drain_finished()
+    // pub(crate) const fn is_write_side_done(&self) -> bool {
+    //     self.pipe.is_write_side_done()
     // }
 
     // #[inline]
-    // /// Returns if splice pump is finished.
-    // pub(crate) const fn splice_pump_finished(&self) -> bool {
-    //     self.pipe.splice_pump_finished()
+    // pub(crate) const fn is_read_side_done(&self) -> bool {
+    //     self.pipe.is_read_side_done()
     // }
 
     #[inline]
-    /// Returns if draining and pumping are both finished.
+    /// Returns if both sides of the pipe are done.
     pub(crate) const fn is_finished(&self) -> bool {
-        self.pipe.splice_drain_finished() && self.pipe.splice_pump_finished()
+        self.pipe.is_write_side_done() && self.pipe.is_read_side_done()
     }
 
     #[must_use]
@@ -249,7 +247,6 @@ impl<R, W> SpliceIoCtx<R, W> {
             error,
         }
     }
-
 }
 
 impl<R, W> SpliceIoCtx<R, W>
@@ -264,31 +261,31 @@ where
         ),
         tracing::instrument(level = "TRACE", skip(cx, r), ret)
     )]
-    /// `poll_splice_drain` moves data from a socket (or file) to a pipe.
+    /// `poll_splice_from_source` moves data from a socket (or file) into the pipe.
     ///
-    /// Invariant: when entering `poll_splice_drain`, the pipe is empty. It is
-    /// either in its initial state, or `poll_splice_pump` has emptied it
-    /// previously.
+    /// Invariant: when entering `poll_splice_from_source`, the pipe is empty.
+    /// It is either in its initial state, or `poll_splice_to_dest` has emptied
+    /// it previously.
     ///
-    /// Given this, `poll_splice_drain` can reasonably assume that the pipe is
-    /// ready for writing, so if splice returns EAGAIN, it must be because
-    /// the socket is not ready for reading.
+    /// Given this, `poll_splice_from_source` can reasonably assume that the
+    /// pipe is ready for writing, so if splice returns EAGAIN, it must be
+    /// because the socket is not ready for reading.
     ///
     /// Will close pipe write side when no more data to read or when I/O error
     /// occurs except EINTR / EAGAIN.
-    pub(crate) fn poll_splice_drain(
+    pub(crate) fn poll_splice_from_source(
         &mut self,
         cx: &mut Context<'_>,
         r: Pin<&mut R>,
         ideal_len: Option<NonZeroUsize>,
-    ) -> Poll<io::Result<Drained>> {
-        crate::trace!("`poll_splice_drain`");
+    ) -> Poll<io::Result<FromSource>> {
+        crate::trace!("`poll_splice_from_source`");
 
         let Some(pipe_write_side_fd) = self.pipe.write_side_fd() else {
-            // Has `set_splice_drain_finished`, no need to close pipe write side again.
-            // self.pipe.set_splice_drain_finished();
+            // Has `set_write_side_done`, no need to close pipe write side again.
+            // self.pipe.set_write_side_done();
 
-            return Poll::Ready(Ok(Drained::Done));
+            return Poll::Ready(Ok(FromSource::Done));
         };
 
         let Some(size_rest_to_splice) = self
@@ -300,9 +297,9 @@ where
             })
             .and_then(NonZeroUsize::new)
         else {
-            self.pipe.set_splice_drain_finished();
+            self.pipe.set_write_side_done();
 
-            return Poll::Ready(Ok(Drained::Done));
+            return Poll::Ready(Ok(FromSource::Done));
         };
 
         loop {
@@ -325,16 +322,16 @@ where
                 .map(NonZeroUsize::new)
                 .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
             }) {
-                Ok(Some(drained)) => {
-                    self.bytes_read += drained.get();
-                    self.size_to_splice -= drained.get();
+                Ok(Some(bytes)) => {
+                    self.bytes_read += bytes.get();
+                    self.size_to_splice -= bytes.get();
 
-                    break Poll::Ready(Ok(Drained::Some(drained)));
+                    break Poll::Ready(Ok(FromSource::Some(bytes)));
                 }
                 Ok(None) => {
-                    self.pipe.set_splice_drain_finished();
+                    self.pipe.set_write_side_done();
 
-                    break Poll::Ready(Ok(Drained::Done));
+                    break Poll::Ready(Ok(FromSource::Done));
                 }
                 Err(e) => {
                     match e.kind() {
@@ -344,7 +341,7 @@ where
                             // continue;
                         }
                         _ => {
-                            self.pipe.set_splice_drain_finished();
+                            self.pipe.set_write_side_done();
 
                             break Poll::Ready(Err(e));
                         }
@@ -361,32 +358,33 @@ where
         ),
         tracing::instrument(level = "TRACE", skip(cx, w), ret)
     )]
-    /// `poll_splice_pump` moves data from a pipe to a socket (or file).
+    /// `poll_splice_to_dest` moves data from the pipe to a socket (or file).
     ///
     /// Will close pipe read side when no more data to write or when I/O error
     /// occurs except EINTR / EAGAIN.
     ///
-    /// Will keep pumping data until the pipe is empty (returns
+    /// Will keep writing data until the pipe is empty (returns
     /// `Poll::Ready(Ok(())`), the socket is not ready (returns
     /// `Poll::Pending`) or error occurs.
-    pub(crate) fn poll_splice_pump(
+    pub(crate) fn poll_splice_to_dest(
         &mut self,
         cx: &mut Context<'_>,
         w: Pin<&mut W>,
     ) -> Poll<io::Result<()>> {
-        crate::trace!("`poll_splice_pump`");
+        crate::trace!("`poll_splice_to_dest`");
 
         let Some(pipe_read_side_fd) = self.pipe.read_side_fd() else {
             return Poll::Ready(Ok(()));
         };
 
         loop {
-            let Some(size_need_to_be_written) = self.bytes_read.checked_sub(self.bytes_written) else {
+            let Some(size_need_to_be_written) = self.bytes_read.checked_sub(self.bytes_written)
+            else {
                 // If `bytes_written` is larger than `bytes_read`, may never stop.
                 // In particular, user's wrong implementation returning
                 // incorrect written length may lead to thread blocking.
 
-                self.pipe.set_splice_pump_finished();
+                self.pipe.set_read_side_done();
 
                 break Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -395,8 +393,8 @@ where
             };
 
             let Some(size_need_to_be_written) = NonZeroUsize::new(size_need_to_be_written) else {
-                if self.pipe.splice_drain_finished() {
-                    self.pipe.set_splice_pump_finished();
+                if self.pipe.is_write_side_done() {
+                    self.pipe.set_read_side_done();
                 }
 
                 break Poll::Ready(Ok(()));
@@ -432,7 +430,7 @@ where
                             // continue;
                         }
                         _ => {
-                            self.pipe.set_splice_drain_finished();
+                            self.pipe.set_write_side_done();
 
                             break Poll::Ready(Err(e));
                         }

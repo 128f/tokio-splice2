@@ -15,8 +15,8 @@
 // #[cfg(feature = "feat-pipe-pool")]
 // pub(crate) mod pool;
 
+use std::io;
 use std::num::NonZeroUsize;
-use std::{io, mem};
 
 use rustix::fd::OwnedFd;
 use rustix::pipe::{fcntl_getpipe_size, fcntl_setpipe_size, pipe_with, PipeFlags};
@@ -42,75 +42,16 @@ pub const DEFAULT_PIPE_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked
 #[derive(Debug)]
 /// Linux Pipe.
 pub struct Pipe {
-    /// File descriptor for reading from the pipe
-    read_side_fd: Fd,
+    /// File descriptor for reading from the pipe. `None` once the read side is
+    /// done.
+    read_side_fd: Option<OwnedFd>,
 
-    /// File descriptor for writing to the pipe
-    write_side_fd: Fd,
+    /// File descriptor for writing to the pipe. `None` once the write side is
+    /// done.
+    write_side_fd: Option<OwnedFd>,
 
     /// Pipe size in bytes.
     size: NonZeroUsize,
-}
-
-#[derive(Debug)]
-enum Fd {
-    /// The file descriptor can be used for reading or writing.
-    Running(OwnedFd),
-
-    #[allow(dead_code)]
-    /// The file descriptor is reserved for future use (to be recycled).
-    Reserved(OwnedFd),
-
-    /// Make compiler happy.
-    Closed,
-}
-
-impl Fd {
-    #[inline]
-    /// Convert the file descriptor to a pending state.
-    ///
-    /// This is used to indicate that the file descriptor is reserved for future
-    /// use.
-    fn set_reserved(&mut self) {
-        if let Fd::Running(owned_fd) = mem::replace(self, Fd::Closed) {
-            *self = Fd::Reserved(owned_fd);
-        }
-    }
-
-    #[inline]
-    const fn as_fd(&self) -> Option<&OwnedFd> {
-        match self {
-            Fd::Running(fd) => Some(fd),
-            _ => None,
-        }
-    }
-
-    // #[inline]
-    // #[allow(unsafe_code)]
-    // /// Safety: the caller must ensure that the operation doesn't care about the
-    // /// file descriptor's state.
-    // unsafe fn force_as_fd(&self) -> &OwnedFd {
-    //     match self {
-    //         Fd::Running(fd) => fd,
-    //         Fd::Reserved(fd) => fd,
-    //         Fd::Closed => {
-    //             panic!("Attempted to access a closed file descriptor");
-    //         }
-    //     }
-    // }
-
-    // #[inline]
-    // #[allow(unsafe_code)]
-    // // Safety: the caller must ensure that the file descriptor is not in use.
-    // unsafe fn force_as_mut_fd(&mut self) -> &mut OwnedFd {
-    //     match self {
-    //         Fd::Running(fd) => fd,
-    //         Fd::Reserved(fd) => fd,
-    //         Fd::Closed => {
-    //             panic!("Attempted to access a closed file descriptor");
-    //         }
-    //     }
-    // }
 }
 
 impl Pipe {
@@ -143,8 +84,8 @@ impl Pipe {
                 })?;
 
                 Ok(Self {
-                    read_side_fd: Fd::Running(read_fd),
-                    write_side_fd: Fd::Running(write_fd),
+                    read_side_fd: Some(read_fd),
+                    write_side_fd: Some(write_fd),
                     size,
                 })
             })
@@ -158,7 +99,7 @@ impl Pipe {
     ///
     /// [`fcntl(2)`]: https://man7.org/linux/man-pages/man2/fcntl.2.html.
     pub fn set_pipe_size(&mut self, pipe_size: usize) -> io::Result<usize> {
-        let Some(write_side_fd) = self.write_side_fd.as_fd() else {
+        let Some(write_side_fd) = self.write_side_fd.as_ref() else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "write side file descriptor is not available",
@@ -171,36 +112,34 @@ impl Pipe {
 
     #[inline]
     pub(crate) const fn write_side_fd(&self) -> Option<&OwnedFd> {
-        self.write_side_fd.as_fd()
+        self.write_side_fd.as_ref()
     }
 
     #[must_use]
     #[inline]
-    pub(crate) const fn splice_drain_finished(&self) -> bool {
-        matches!(self.write_side_fd, Fd::Reserved(_) | Fd::Closed)
+    pub(crate) const fn is_write_side_done(&self) -> bool {
+        self.write_side_fd.is_none()
     }
 
     #[inline]
-    /// Close the pipe write side file descriptor.
-    pub(crate) fn set_splice_drain_finished(&mut self) {
-        self.write_side_fd.set_reserved();
+    pub(crate) fn set_write_side_done(&mut self) {
+        self.write_side_fd = None;
     }
 
     #[inline]
     pub(crate) const fn read_side_fd(&self) -> Option<&OwnedFd> {
-        self.read_side_fd.as_fd()
+        self.read_side_fd.as_ref()
     }
 
     #[must_use]
     #[inline]
-    pub(crate) const fn splice_pump_finished(&self) -> bool {
-        matches!(self.read_side_fd, Fd::Reserved(_) | Fd::Closed)
+    pub(crate) const fn is_read_side_done(&self) -> bool {
+        self.read_side_fd.is_none()
     }
 
     #[inline]
-    /// Close the pipe read side file descriptor.
-    pub(crate) fn set_splice_pump_finished(&mut self) {
-        self.read_side_fd.set_reserved();
+    pub(crate) fn set_read_side_done(&mut self) {
+        self.read_side_fd = None;
     }
 
     #[must_use]
@@ -211,13 +150,3 @@ impl Pipe {
     }
 }
 
-// #[cfg(feature = "feat-pipe-pool")]
-// impl Drop for Pipe {
-//     fn drop(&mut self) {
-//         #[allow(unsafe_code)]
-//         // Safety: the pipe is not in use, so it is safe to return it to the
-// pool.         unsafe {
-//             pool::PipePool::return_one(self)
-//         };
-//     }
-// }
