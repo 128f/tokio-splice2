@@ -85,8 +85,8 @@ async fn forwarding(mut stream1: TcpStream) -> io::Result<()> {
 
     let instant = std::time::Instant::now();
 
-    let io_sl2sr = tokio_splice2::context::SpliceIoCtx::new()?.into();
-    let io_sr2sl = tokio_splice2::context::SpliceIoCtx::new()?.into();
+    let io_sl2sr = tokio_splice2::splice::Splicer::new()?.into();
+    let io_sr2sl = tokio_splice2::splice::Splicer::new()?.into();
 
     let traffic = tokio_splice2::io::SpliceBidiIo { io_sl2sr, io_sr2sl }
         .execute(&mut stream1, &mut stream2)

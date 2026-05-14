@@ -10,10 +10,9 @@ use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite, Interest};
 use tokio::net::{TcpStream, UnixStream};
 
-use crate::context::SpliceIoCtx;
+use crate::splice::Splicer;
 use crate::traffic::TrafficResult;
 
-#[pin_project::pin_project]
 #[derive(Debug)]
 /// Zero-copy unidirectional I/O with `splice(2)`.
 ///
@@ -21,40 +20,34 @@ use crate::traffic::TrafficResult;
 ///
 /// Notice: see the [module-level documentation](crate) for known limitations.
 pub struct SpliceIo<R, W> {
-    /// Context for the splice I/O operation.
-    ///
-    /// See [`SpliceIoCtx`] for more details.
-    ctx: SpliceIoCtx<R, W>,
-
-    #[pin]
+    splicer: Splicer<R, W>,
     state: TransferState,
 }
 
 impl<R, W> ops::Deref for SpliceIo<R, W> {
-    type Target = SpliceIoCtx<R, W>;
+    type Target = Splicer<R, W>;
 
     fn deref(&self) -> &Self::Target {
-        &self.ctx
+        &self.splicer
     }
 }
 
-impl<R, W> From<SpliceIoCtx<R, W>> for SpliceIo<R, W> {
-    fn from(ctx: SpliceIoCtx<R, W>) -> Self {
+impl<R, W> From<Splicer<R, W>> for SpliceIo<R, W> {
+    fn from(splicer: Splicer<R, W>) -> Self {
         SpliceIo {
-            ctx,
-            state: TransferState::FromSource,
+            splicer,
+            state: TransferState::Fill,
         }
     }
 }
 
 #[derive(Debug)]
-#[pin_project::pin_project(project = TransferStateProj)]
 enum TransferState {
     /// Moving data from `R` into the pipe.
-    FromSource,
+    Fill,
 
     /// Moving data from the pipe to `W`.
-    ToDest,
+    Drain,
 
     /// Flushing buffered data of `W`.
     Flushing,
@@ -79,20 +72,14 @@ where
     ///
     /// This is a convenient `async fn` version of
     /// [`SpliceIo::poll_execute`].
-    pub async fn execute(self, r: &mut R, w: &mut W) -> TrafficResult
+    pub async fn execute(mut self, r: &mut R, w: &mut W) -> TrafficResult
     where
         R: Unpin,
         W: Unpin,
     {
-        let mut this = pin!(self);
-        let mut r = Pin::new(r);
-        let mut w = Pin::new(w);
+        let error = poll_fn(|cx| self.poll_execute(cx, r, w)).await.err();
 
-        let error = poll_fn(|cx| this.as_mut().poll_execute(cx, r.as_mut(), w.as_mut()))
-            .await
-            .err();
-
-        this.ctx.traffic_client_tx(error)
+        self.splicer.traffic_client_tx(error)
     }
 
     #[cfg_attr(
@@ -115,17 +102,17 @@ where
     /// - The [`SpliceIo`] instance MUST NOT be reused after completion.
     /// - The caller MAY manually extracts [`TrafficResult`] from the context.
     pub fn poll_execute(
-        mut self: Pin<&mut Self>,
+        &mut self,
         cx: &mut Context<'_>,
-        mut r: Pin<&mut R>,
-        mut w: Pin<&mut W>,
+        mut r: &mut R,
+        mut w: &mut W,
     ) -> Poll<io::Result<()>> {
         macro_rules! ready_or_cleanup {
-            ($e:expr, $state:expr) => {
+            ($e:expr, $next:ident) => {
                 match $e {
                     Poll::Ready(Ok(t)) => t,
                     Poll::Ready(Err(e)) => {
-                        $state.set(TransferState::Faulted { error: Some(e) });
+                        $next = Some(TransferState::Faulted { error: Some(e) });
                         continue;
                     }
                     Poll::Pending => {
@@ -135,52 +122,69 @@ where
             };
         }
 
+        let mut next_state: Option<TransferState> = None;
+
         loop {
+            if let Some(s) = next_state.take() {
+                self.state = s;
+            }
+
             crate::enter_tracing_span!(
                 "loop",
-                ctx = ?self.ctx,
+                splicer = ?self.splicer,
                 state = ?self.state,
             );
 
-            let mut this = self.as_mut().project();
-
-            match this.state.as_mut().project() {
-                TransferStateProj::FromSource => {
-                    let _ = ready_or_cleanup!(
-                        this.ctx.poll_splice_from_source(cx, r.as_mut()),
-                        this.state.as_mut()
-                    );
-
-                    this.state.set(TransferState::ToDest);
-                }
-                TransferStateProj::ToDest => {
-                    ready_or_cleanup!(
-                        this.ctx.poll_splice_to_dest(cx, w.as_mut()),
-                        this.state.as_mut()
-                    );
-
-                    if this.ctx.is_finished() {
-                        // All done, flush and shutdown `W`.
-                        this.state.set(TransferState::Terminating);
-                    } else {
-                        // Flush `W` after writing to dest.
-                        this.state.set(TransferState::Flushing);
+            match &mut self.state {
+                TransferState::Fill => {
+                    // check if we're ready to read
+                    ready!(r.poll_read_ready(cx))?;
+                    // try to read, if EAGAIN then loop back and wait again
+                    // side-effect: try_io_read will clear the readiness state if it returns EAGAIN, so we won't busy loop
+                    let read_result = r.try_io_read(|| self.splicer.try_splice_from_source(&*r));
+                    match read_result {
+                        Ok(()) => next_state = Some(TransferState::Drain),
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                        Err(e) => {
+                            next_state = Some(TransferState::Faulted { error: Some(e) });
+                            continue;
+                        }
                     }
                 }
-                TransferStateProj::Flushing => {
-                    ready_or_cleanup!(w.as_mut().poll_flush(cx), this.state.as_mut());
-
-                    this.state.set(TransferState::FromSource);
+                TransferState::Drain => {
+                    // check if we're ready to write
+                    ready!(w.poll_write_ready(cx))?;
+                    // try to read, if EAGAIN then loop back and wait again
+                    // side-effect: try_io_read will clear the readiness state if it returns EAGAIN, so we won't busy loop
+                    let write_result = w.try_io_write(|| self.splicer.try_splice_to_dest(&*w));
+                    match write_result {
+                        Ok(()) => {
+                            next_state = match self.splicer.is_finished() {
+                                false => Some(TransferState::Flushing),
+                                true => Some(TransferState::Terminating),
+                            };
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                        Err(e) => {
+                            next_state = Some(TransferState::Faulted { error: Some(e) });
+                            continue;
+                        }
+                    }
                 }
-                TransferStateProj::Terminating => {
-                    ready_or_cleanup!(w.as_mut().poll_shutdown(cx), this.state.as_mut());
+                TransferState::Flushing => {
+                    ready_or_cleanup!(w.poll_flush(cx), next_state);
 
-                    this.state.set(TransferState::Finished);
+                    next_state = Some(TransferState::Fill);
                 }
-                TransferStateProj::Faulted { error } => {
+                TransferState::Terminating => {
+                    ready_or_cleanup!(w.poll_shutdown(cx), next_state);
+
+                    next_state = Some(TransferState::Finished);
+                }
+                TransferState::Faulted { error } => {
                     if error.is_some() {
                         // Best effort to shutdown the writer.
-                        ready!(w.as_mut().poll_shutdown(cx))?;
+                        ready!(w.poll_shutdown(cx))?;
                     }
 
                     let Some(error) = error.take() else {
@@ -192,7 +196,7 @@ where
 
                     break Poll::Ready(Err(error));
                 }
-                TransferStateProj::Finished => {
+                TransferState::Finished => {
                     break Poll::Ready(Ok(()));
                 }
             }
@@ -200,15 +204,12 @@ where
     }
 }
 
-#[pin_project::pin_project]
 #[derive(Debug)]
 /// Bidirectional splice I/O, combining two `SpliceIo` instances.
 pub struct SpliceBidiIo<SL, SR> {
-    #[pin]
     /// Splice I/O instance, from `SL` to `SR`.
     pub io_sl2sr: SpliceIo<SL, SR>,
 
-    #[pin]
     /// Splice I/O instance, from `SR` to `SL`.
     pub io_sr2sl: SpliceIo<SR, SL>,
 }
@@ -223,24 +224,17 @@ where
     ///
     /// This is a convenient `async fn` version of
     /// [`SpliceBidiIo::poll_execute`].
-    pub async fn execute(self, sl: &mut SL, sr: &mut SR) -> TrafficResult
+    pub async fn execute(mut self, sl: &mut SL, sr: &mut SR) -> TrafficResult
     where
         SL: Unpin,
         SR: Unpin,
     {
-        let mut this = pin!(self);
-        let mut sl = Pin::new(sl);
-        let mut sr = Pin::new(sr);
+        let error = poll_fn(|cx| self.poll_execute(cx, sl, sr)).await.err();
 
-        let error = poll_fn(|cx| this.as_mut().poll_execute(cx, sl.as_mut(), sr.as_mut()))
-            .await
-            .err();
-
-        // After copy done, we can return the traffic result.
-        this.io_sl2sr
-            .ctx
+        self.io_sl2sr
+            .splicer
             .traffic_client_tx(error)
-            .merge(this.io_sr2sl.ctx.traffic_client_rx(None))
+            .merge(self.io_sr2sl.splicer.traffic_client_rx(None))
     }
 
     #[cfg_attr(
@@ -268,39 +262,17 @@ where
     /// - The [`SpliceBidiIo`] instance MUST NOT be reused after completion.
     /// - The caller MAY manually extracts [`TrafficResult`] from the context.
     pub fn poll_execute(
-        self: Pin<&mut Self>,
+        &mut self,
         cx: &mut Context<'_>,
-        mut sl: Pin<&mut SL>,
-        mut sr: Pin<&mut SR>,
+        mut sl: &mut SL,
+        mut sr: &mut SR,
     ) -> Poll<io::Result<()>> {
-        let mut this = self.project();
-
-        let io_sl2sr_ret = this
-            .io_sl2sr
-            .as_mut()
-            .poll_execute(cx, sl.as_mut(), sr.as_mut());
-        let io_sr2sl_ret = this
-            .io_sr2sl
-            .as_mut()
-            .poll_execute(cx, sr.as_mut(), sl.as_mut());
-
-        #[cfg(not(feature = "feat-brutal-shutdown"))]
-        {
-            match (io_sl2sr_ret, io_sr2sl_ret) {
-                (Poll::Pending, _) | (_, Poll::Pending) => Poll::Pending,
-                (Poll::Ready(Ok(())), Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
-                (Poll::Ready(Err(e)), _) | (_, Poll::Ready(Err(e))) => Poll::Ready(Err(e)),
-            }
-        }
-
-        #[cfg(feature = "feat-brutal-shutdown")]
-        {
-            match (io_sl2sr_ret, io_sr2sl_ret) {
-                (Poll::Pending, Poll::Pending) => Poll::Pending,
-                (Poll::Ready(Err(e)), _) | (_, Poll::Ready(Err(e))) => Poll::Ready(Err(e)),
-                // Once received `FIN`, close the other side immediately.
-                (Poll::Ready(Ok(())), _) | (_, Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
-            }
+        let io_sl2sr_ret = self.io_sl2sr.poll_execute(cx, sl, sr);
+        let io_sr2sl_ret = self.io_sr2sl.poll_execute(cx, sr, sl);
+        match (io_sl2sr_ret, io_sr2sl_ret) {
+            (Poll::Pending, _) | (_, Poll::Pending) => Poll::Pending,
+            (Poll::Ready(Ok(())), Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
+            (Poll::Ready(Err(e)), _) | (_, Poll::Ready(Err(e))) => Poll::Ready(Err(e)),
         }
     }
 }

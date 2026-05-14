@@ -130,7 +130,7 @@ async fn splice_to_file(
         f_offset_end = None;
     }
 
-    tokio_splice2::SpliceIo::from(tokio_splice2::SpliceIoCtx::with_output_file(
+    tokio_splice2::SpliceIo::from(tokio_splice2::Splicer::with_output_file(
         w_len,
         f_offset_start,
         f_offset_end,

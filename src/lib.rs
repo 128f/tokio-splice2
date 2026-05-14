@@ -1,19 +1,19 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(debug_assertions, allow(clippy::unreachable))]
 
-pub mod context;
+pub mod splice;
 pub mod io;
 pub mod pipe;
 pub mod traffic;
 pub mod utils;
 
-pub use context::SpliceIoCtx;
+pub use splice::Splicer;
 pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceIo};
 
 #[inline]
 /// Copies data from `r` to `w` using `splice(2)`.
 ///
-/// See [`SpliceIoCtx::new`] and [`SpliceIo::execute`] for more details; see
+/// See [`Splicer::new`] and [`SpliceIo::execute`] for more details; see
 /// the [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -24,7 +24,7 @@ where
     R: io::AsyncReadFd + IsNotFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(io::SpliceIo::from(context::SpliceIoCtx::new()?)
+    Ok(io::SpliceIo::from(splice::Splicer::new()?)
         .execute(r, w)
         .await)
 }
@@ -32,7 +32,7 @@ where
 #[inline]
 /// Copies data from file `r` to `w` using `splice(2)`.
 ///
-/// See [`SpliceIoCtx::with_input_file`] for more details; see the
+/// See [`Splicer::with_input_file`] for more details; see the
 /// [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -50,7 +50,7 @@ where
     R: io::AsyncReadFd + IsFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(io::SpliceIo::from(context::SpliceIoCtx::with_input_file(
+    Ok(io::SpliceIo::from(splice::Splicer::with_input_file(
         f_len,
         f_offset_start,
         f_offset_end,
@@ -66,7 +66,7 @@ where
 /// data read to the opposing stream. This happens in both directions
 /// concurrently.
 ///
-/// See [`SpliceIoCtx::new`] and [`SpliceBidiIo::execute`] for more details;
+/// See [`Splicer::new`] and [`SpliceBidiIo::execute`] for more details;
 /// see the [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -81,8 +81,8 @@ where
     B: io::AsyncReadFd + io::AsyncWriteFd + IsNotFile + Unpin,
 {
     Ok(io::SpliceBidiIo {
-        io_sl2sr: context::SpliceIoCtx::new()?.into(),
-        io_sr2sl: context::SpliceIoCtx::new()?.into(),
+        io_sl2sr: splice::Splicer::new()?.into(),
+        io_sr2sl: splice::Splicer::new()?.into(),
     }
     .execute(sl, sr)
     .await)
