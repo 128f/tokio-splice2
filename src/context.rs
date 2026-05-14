@@ -263,7 +263,6 @@ where
         &mut self,
         cx: &mut Context<'_>,
         r: Pin<&mut R>,
-        ideal_len: Option<NonZeroUsize>,
     ) -> Poll<io::Result<FromSource>> {
         crate::trace!("`poll_splice_from_source`");
 
@@ -277,10 +276,6 @@ where
         let Some(size_rest_to_splice) = self
             .size_to_splice
             .checked_sub(self.bytes_read)
-            .map(|l| match ideal_len {
-                Some(len) => len.get().min(l),
-                None => l,
-            })
             .and_then(NonZeroUsize::new)
         else {
             self.pipe.set_write_side_done();

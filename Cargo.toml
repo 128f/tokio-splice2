@@ -13,7 +13,6 @@ readme = "README.md"
 repository = "https://github.com/hanyu-dev/tokio-splice2"
 
 [package.metadata.docs.rs]
-features = ["feat-rate-limit"]
 targets = ["x86_64-unknown-linux-gnu"]
 rustdoc-args = [
     "--generate-link-to-definition",
@@ -23,7 +22,6 @@ rustdoc-args = [
 ]
 
 [dependencies]
-crossbeam-utils = "0.8.21"
 pin-project = "1.1.10"
 rustix = { version = "1.0.0", features = ["pipe"] }
 tokio = { version = "1.47.1", features = ["fs", "net"] }
@@ -42,9 +40,6 @@ feat-tracing = ["dep:tracing"]
 
 # Enable crate `tracing` support and enable Level::TRACE log in release profile build.
 feat-tracing-trace = ["feat-tracing"]
-
-# Enable rate limiting support
-feat-rate-limit = ["tokio/time"]
 
 # Perform brutal shutdown instead of graceful shutdown.
 feat-brutal-shutdown = []

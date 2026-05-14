@@ -85,64 +85,14 @@ async fn forwarding(mut stream1: TcpStream) -> io::Result<()> {
 
     let instant = std::time::Instant::now();
 
-    // let result = tokio_splice::zero_copy_bidirectional(&mut stream1, &mut
-    // stream2).await;
-
-    // let limit = env::var("LIMIT")
-    //     .ok()
-    //     .and_then(|r| r.parse().ok())
-    //     .unwrap_or(1u64 * 1000 * 1000);
-
-    // println!("Rate limit is set to {limit} B/s");
-
-    // let limit = RateLimit::new(NonZeroU64::new(limit).unwrap());
-
-    // let rate_limiter_clone = rate_limiter.clone();
-    // tokio::spawn(async move {
-    //     loop {
-    //         tokio::time::sleep(Duration::from_secs(10)).await;
-    //         rate_limiter_clone.set_total(NonZeroU64::new(100 * 1024).unwrap());
-    //         println!("Rate limiter updated to 100 KiB/s");
-
-    //         tokio::time::sleep(Duration::from_secs(10)).await;
-    //         rate_limiter_clone.set_total(NonZeroU64::new(8 * 1024).unwrap());
-    //         println!("Rate limiter updated to 8 KiB/s");
-
-    //         tokio::time::sleep(Duration::from_secs(10)).await;
-    //         rate_limiter_clone.set_total(NonZeroU64::new(8 * 1024 *
-    // 1024).unwrap());         println!("Rate limiter updated to 8 MiB/s");
-
-    //         tokio::time::sleep(Duration::from_secs(10)).await;
-    //         rate_limiter_clone.set_total(NonZeroU64::new(300 * 1024).unwrap());
-    //         println!("Rate limiter updated to 300 KiB/s");
-
-    //         // tokio::time::sleep(Duration::from_secs(10)).await;
-    //         // rate_limiter_clone.set_total(NonZeroU64::new(16 * 1000 *
-    //         // 1000).unwrap()); println!("Rate limiter updated to 16
-    //         // MB/s");
-
-    //         // tokio::time::sleep(Duration::from_secs(10)).await;
-
-    //         // rate_limiter_clone.set_total(NonZeroU64::new(500 *
-    //         // 1000).unwrap()); println!("Rate limiter updated to
-    //         // 500 KB/s");
-
-    //         // tokio::time::sleep(Duration::from_secs(10)).await;
-    //         // rate_limiter_clone.set_disable();
-    //         // println!("Rate limiter updated to unlimited");
-    //     }
-    // });
-
     let io_sl2sr = tokio_splice2::context::SpliceIoCtx::new()?.into();
     let io_sr2sl = tokio_splice2::context::SpliceIoCtx::new()?.into();
 
     let traffic = tokio_splice2::io::SpliceBidiIo { io_sl2sr, io_sr2sl }
         .execute(&mut stream1, &mut stream2)
         .await;
-    // let result = realm_io::bidi_zero_copy(&mut stream1, &mut stream2).await;
 
     let total = traffic.sum();
-    // let total = traffic.0 + traffic.1;
     let cost = instant.elapsed();
     println!(
         "Forwarded traffic: total: {total} B, time: {:.2} s, avg: {:.4} B/s, error: {:?}",

@@ -1,8 +1,6 @@
 //! `splice(2)` I/O implementation.
 
 use std::future::poll_fn;
-#[cfg(not(feature = "feat-rate-limit"))]
-use std::marker::PhantomPinned;
 use std::os::fd::AsFd;
 use std::pin::{pin, Pin};
 use std::task::{ready, Context, Poll};
@@ -11,15 +9,9 @@ use std::{io, ops};
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncWrite, Interest};
 use tokio::net::{TcpStream, UnixStream};
-#[cfg(feature = "feat-rate-limit")]
-use tokio::time::Sleep;
 
 use crate::context::SpliceIoCtx;
-use crate::rate::RATE_LIMITER_DISABLED;
-#[cfg(feature = "feat-rate-limit")]
-use crate::rate::{RateLimit, RateLimitResult, RateLimiter, RATE_LIMITER_ENABLED};
 use crate::traffic::TrafficResult;
-use crate::utils::FromSource;
 
 #[pin_project::pin_project]
 #[derive(Debug)]
@@ -28,23 +20,17 @@ use crate::utils::FromSource;
 /// For bidirectional I/O version, see [`SpliceBidiIo`].
 ///
 /// Notice: see the [module-level documentation](crate) for known limitations.
-pub struct SpliceIo<R, W, const RATE_LIMITER_IS_ENABLED: bool = RATE_LIMITER_DISABLED> {
+pub struct SpliceIo<R, W> {
     /// Context for the splice I/O operation.
     ///
     /// See [`SpliceIoCtx`] for more details.
     ctx: SpliceIoCtx<R, W>,
 
-    #[cfg(feature = "feat-rate-limit")]
-    /// To limit the transfer speed.
-    rate_limiter: RateLimiter<RATE_LIMITER_IS_ENABLED>,
-
     #[pin]
     state: TransferState,
 }
 
-impl<R, W, const RATE_LIMITER_IS_ENABLED: bool> ops::Deref
-    for SpliceIo<R, W, RATE_LIMITER_IS_ENABLED>
-{
+impl<R, W> ops::Deref for SpliceIo<R, W> {
     type Target = SpliceIoCtx<R, W>;
 
     fn deref(&self) -> &Self::Target {
@@ -52,27 +38,11 @@ impl<R, W, const RATE_LIMITER_IS_ENABLED: bool> ops::Deref
     }
 }
 
-impl<R, W> From<SpliceIoCtx<R, W>> for SpliceIo<R, W, RATE_LIMITER_DISABLED> {
+impl<R, W> From<SpliceIoCtx<R, W>> for SpliceIo<R, W> {
     fn from(ctx: SpliceIoCtx<R, W>) -> Self {
         SpliceIo {
             ctx,
-            #[cfg(feature = "feat-rate-limit")]
-            rate_limiter: RateLimiter::empty(),
             state: TransferState::FromSource,
-        }
-    }
-}
-
-impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
-    #[cfg(feature = "feat-rate-limit")]
-    /// Apply rate limitation during the splice I/O.
-    ///
-    /// See [`RateLimit`] for more details.
-    pub fn with_rate_limit(self, limit: RateLimit) -> SpliceIo<R, W, RATE_LIMITER_ENABLED> {
-        SpliceIo {
-            ctx: self.ctx,
-            rate_limiter: RateLimiter::new(limit),
-            state: self.state,
         }
     }
 }
@@ -82,20 +52,6 @@ impl<R, W> SpliceIo<R, W, RATE_LIMITER_DISABLED> {
 enum TransferState {
     /// Moving data from `R` into the pipe.
     FromSource,
-
-    #[cfg_attr(not(feature = "feat-rate-limit"), allow(dead_code))]
-    /// Rate limiter is throttling the I/O operations.
-    Throttled {
-        #[cfg(feature = "feat-rate-limit")]
-        #[pin]
-        sleep: Sleep,
-
-        #[cfg(not(feature = "feat-rate-limit"))]
-        #[doc(hidden)]
-        #[pin]
-        // Make `pin-project` happy.
-        _pinned: PhantomPinned,
-    },
 
     /// Moving data from the pipe to `W`.
     ToDest,
@@ -113,7 +69,7 @@ enum TransferState {
     Finished,
 }
 
-impl<R, W, const RATE_LIMITER_IS_ENABLED: bool> SpliceIo<R, W, RATE_LIMITER_IS_ENABLED>
+impl<R, W> SpliceIo<R, W>
 where
     R: AsyncReadFd,
     W: AsyncWriteFd,
@@ -146,7 +102,6 @@ where
         ),
         tracing::instrument(level = "TRACE", skip(self, cx, r, w), ret)
     )]
-    #[allow(clippy::too_many_lines)]
     /// Performs zero-copy data transfer from reader `R` to writer `W` using the
     /// splice syscall.
     ///
@@ -191,48 +146,11 @@ where
 
             match this.state.as_mut().project() {
                 TransferStateProj::FromSource => {
-                    #[cfg(feature = "feat-rate-limit")]
-                    let ideal_len = this.rate_limiter.ideal_len(this.ctx.pipe_size());
-
-                    #[cfg(not(feature = "feat-rate-limit"))]
-                    let ideal_len = None;
-
-                    match ready_or_cleanup!(
-                        this.ctx.poll_splice_from_source(cx, r.as_mut(), ideal_len),
+                    let _ = ready_or_cleanup!(
+                        this.ctx.poll_splice_from_source(cx, r.as_mut()),
                         this.state.as_mut()
-                    ) {
-                        FromSource::Some(_bytes) => {
-                            #[cfg(feature = "feat-rate-limit")]
-                            {
-                                #[allow(clippy::used_underscore_binding)]
-                                match this.rate_limiter.check(_bytes) {
-                                    RateLimitResult::Accepted => {}
-                                    RateLimitResult::Throttled { now, dur } => {
-                                        this.state.as_mut().set(TransferState::Throttled {
-                                            sleep: tokio::time::sleep_until(now + dur),
-                                        });
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        FromSource::Done => {}
-                    }
+                    );
 
-                    this.state.set(TransferState::ToDest);
-                }
-                #[cfg(feature = "feat-rate-limit")]
-                TransferStateProj::Throttled { sleep } => {
-                    use std::future::Future;
-
-                    ready!(sleep.poll(cx));
-
-                    // After throttling, continue moving data from the pipe to `W`.
-                    this.state.set(TransferState::ToDest);
-                }
-                #[cfg(not(feature = "feat-rate-limit"))]
-                TransferStateProj::Throttled { _pinned } => {
-                    // Actually, this branch should never be reached.
                     this.state.set(TransferState::ToDest);
                 }
                 TransferStateProj::ToDest => {
@@ -285,23 +203,17 @@ where
 #[pin_project::pin_project]
 #[derive(Debug)]
 /// Bidirectional splice I/O, combining two `SpliceIo` instances.
-pub struct SpliceBidiIo<
-    SL,
-    SR,
-    const SL_RATE_LIMITER_IS_ENABLED: bool,
-    const SR_RATE_LIMITER_IS_ENABLED: bool,
-> {
+pub struct SpliceBidiIo<SL, SR> {
     #[pin]
     /// Splice I/O instance, from `SL` to `SR`.
-    pub io_sl2sr: SpliceIo<SL, SR, SL_RATE_LIMITER_IS_ENABLED>,
+    pub io_sl2sr: SpliceIo<SL, SR>,
 
     #[pin]
     /// Splice I/O instance, from `SR` to `SL`.
-    pub io_sr2sl: SpliceIo<SR, SL, SR_RATE_LIMITER_IS_ENABLED>,
+    pub io_sr2sl: SpliceIo<SR, SL>,
 }
 
-impl<SL, SR, const SL_RATE_LIMITER_IS_ENABLED: bool, const SR_RATE_LIMITER_IS_ENABLED: bool>
-    SpliceBidiIo<SL, SR, SL_RATE_LIMITER_IS_ENABLED, SR_RATE_LIMITER_IS_ENABLED>
+impl<SL, SR> SpliceBidiIo<SL, SR>
 where
     SL: AsyncReadFd + AsyncWriteFd + IsNotFile,
     SR: AsyncReadFd + AsyncWriteFd + IsNotFile,

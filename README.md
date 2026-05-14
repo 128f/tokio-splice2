@@ -26,7 +26,6 @@ See [examples/proxy.rs](./examples/proxy.rs), with a [Go implementation](./examp
   - Add unidirectional copy.
   - Returns `TrafficResult` instead of `io::Result<T>` to have traffic statistics returned when error occurs.
   - (Experimental) Add `tokio::fs::File` support to splice from (like `sendfile`) / to (not fully tested).
-  - (Experimental) Traffic rate limitation support.
 
 ## MSRV
 

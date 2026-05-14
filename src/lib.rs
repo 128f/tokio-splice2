@@ -4,28 +4,11 @@
 pub mod context;
 pub mod io;
 pub mod pipe;
-#[cfg(feature = "feat-rate-limit")]
-pub mod rate;
 pub mod traffic;
 pub mod utils;
 
-#[cfg(not(feature = "feat-rate-limit"))]
-pub mod rate {
-    //! TCP rate limiter implementation.
-    //!
-    //! This module provides a no-op implementation of the rate limiter if the
-    //! `feat-rate-limit` feature is not enabled.
-
-    #[allow(unused)]
-    pub(crate) const RATE_LIMITER_ENABLED: bool = true;
-    #[allow(unused)]
-    pub(crate) const RATE_LIMITER_DISABLED: bool = false;
-}
-
 pub use context::SpliceIoCtx;
 pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceIo};
-#[cfg(feature = "feat-rate-limit")]
-pub use rate::RateLimit;
 
 #[inline]
 /// Copies data from `r` to `w` using `splice(2)`.
