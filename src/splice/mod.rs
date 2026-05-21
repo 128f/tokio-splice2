@@ -1,16 +1,17 @@
 //! `splice(2)` operation state and primitives.
 
+pub(crate) mod exec;
+mod util;
+
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::os::fd::AsFd;
 use std::{fmt, io};
 
-use rustix::pipe::{splice, SpliceFlags};
-
+use self::util::Offset;
 use crate::io::{IsFile, IsNotFile};
 use crate::pipe::Pipe;
 use crate::traffic::TrafficResult;
-use crate::utils::Offset;
 
 /// State for a `splice(2)` operation: the pipe used as the kernel-side buffer,
 /// the byte counters, and any file offset.
@@ -120,7 +121,7 @@ impl<R, W> Splicer<R, W> {
         W: IsNotFile,
     {
         Ok(Splicer {
-            offset: Offset::In(Some(f_offset_start.unwrap_or(0))),
+            offset: Offset::In(f_offset_start.unwrap_or(0)),
             size_to_splice: Offset::calc_size_to_splice(f_len, f_offset_start, f_offset_end)?
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file size too large"))?,
@@ -154,10 +155,12 @@ impl<R, W> Splicer<R, W> {
         W: IsFile,
     {
         Ok(Splicer {
-            offset: Offset::Out(Some(f_offset_start.unwrap_or(0))),
+            offset: Offset::Out(f_offset_start.unwrap_or(0)),
             size_to_splice: Offset::calc_size_to_splice(f_len, f_offset_start, f_offset_end)?
                 .try_into()
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file size too large"))?,
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "splice range too large")
+                })?,
             ..Self::new_inner()?
         })
     }
@@ -175,7 +178,7 @@ impl<R, W> Splicer<R, W> {
     ///
     /// [`fcntl(2)`]: https://man7.org/linux/man-pages/man2/fcntl.2.html.
     pub fn with_pipe_size(mut self, pipe_size: usize) -> io::Result<Self> {
-        self.pipe.set_pipe_size(pipe_size)?;
+        self.pipe = self.pipe.with_pipe_size(pipe_size)?;
         Ok(self)
     }
 }
@@ -231,82 +234,24 @@ impl<R, W> Splicer<R, W> {
     }
 }
 
-impl<R, W> Splicer<R, W> {
-    /// `try_splice_from_source` moves data from a socket (or file) into the pipe.
-    ///
-    /// Precondition: when called, the pipe is empty. It is either in its initial
-    /// state, or `try_splice_to_dest` has emptied it previously.
-    ///
-    /// Given this, the pipe is ready for writing, so if splice returns EAGAIN
-    /// it must be because the source is not ready for reading.
-    ///
-    /// Closes the pipe write side when the target byte count has been reached.
-    pub(crate) fn try_splice_from_source(&mut self, r: &impl AsFd) -> io::Result<()> {
-        let Some(pipe_write_side_fd) = self.pipe.write_side_fd() else {
-            return Ok(());
-        };
-
-        let Some(size_rest_to_splice) = self
-            .size_to_splice
-            .checked_sub(self.bytes_read)
-            .and_then(NonZeroUsize::new)
-        else {
+impl<R: AsFd, W> Splicer<R, W> {
+    #[inline]
+    pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<usize> {
+        let n = exec::try_splice_from_source(self, r)?;
+        if n == 0 {
             self.pipe.set_write_side_done();
-
-            return Ok(());
-        };
-
-        match splice(
-            r.as_fd(),
-            self.offset.off_in(),
-            pipe_write_side_fd,
-            None,
-            size_rest_to_splice.get(),
-            SpliceFlags::NONBLOCK,
-        ) {
-            Ok(0) => {
-                self.pipe.set_write_side_done();
-                Ok(())
-            }
-            Ok(n) => {
-                self.bytes_read += n;
-                Ok(())
-            }
-            Err(e) => Err(io::Error::from_raw_os_error(e.raw_os_error())),
+        } else {
+            self.bytes_read += n;
         }
+        Ok(n)
     }
+}
 
-    /// `try_splice_to_dest` moves data from the pipe to a socket (or file).
-    ///
-    /// Performs a single non-blocking splice attempt. Returns EAGAIN if the
-    /// destination is not ready.
-    pub(crate) fn try_splice_to_dest(&mut self, w: &impl AsFd) -> io::Result<()> {
-        let Some(pipe_read_side_fd) = self.pipe.read_side_fd() else {
-            return Ok(());
-        };
-
-        let Some(size_need_to_be_written) = self
-            .bytes_read
-            .checked_sub(self.bytes_written)
-            .and_then(NonZeroUsize::new)
-        else {
-            return Ok(());
-        };
-
-        match splice(
-            pipe_read_side_fd,
-            None,
-            w.as_fd(),
-            self.offset.off_out(),
-            size_need_to_be_written.get(),
-            SpliceFlags::NONBLOCK,
-        ) {
-            Ok(0) => Err(io::ErrorKind::WriteZero.into()),
-            Ok(n) => {
-                self.bytes_written += n;
-                Ok(())
-            }
-            Err(e) => Err(io::Error::from_raw_os_error(e.raw_os_error())),
-        }
+impl<R, W: AsFd> Splicer<R, W> {
+    #[inline]
+    pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<usize> {
+        let n = exec::try_splice_to_destination(self, w)?;
+        self.bytes_written += n;
+        Ok(n)
     }
 }

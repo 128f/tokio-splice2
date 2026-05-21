@@ -91,14 +91,14 @@ impl Pipe {
             })
     }
 
-    /// Set the pipe size.
+    /// Set the pipe size, consuming the pipe and returning it with the new size.
     ///
     /// ## Errors
     ///
     /// See [`fcntl(2)`].
     ///
     /// [`fcntl(2)`]: https://man7.org/linux/man-pages/man2/fcntl.2.html.
-    pub fn set_pipe_size(&mut self, pipe_size: usize) -> io::Result<usize> {
+    pub fn with_pipe_size(mut self, pipe_size: usize) -> io::Result<Self> {
         let Some(write_side_fd) = self.write_side_fd.as_ref() else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -106,8 +106,12 @@ impl Pipe {
             ));
         };
 
-        fcntl_setpipe_size(write_side_fd, pipe_size)
-            .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
+        let new_size = fcntl_setpipe_size(write_side_fd, pipe_size)
+            .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+        self.size = NonZeroUsize::new(new_size).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "fcntl returned zero pipe size")
+        })?;
+        Ok(self)
     }
 
     #[inline]

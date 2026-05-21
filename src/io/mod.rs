@@ -129,7 +129,7 @@ where
                     // try to read, if EAGAIN then loop back and wait again
                     // side-effect: try_io_read will clear the readiness state if it returns EAGAIN, so we won't busy loop
                     match r.try_io_read(|| self.splicer.try_splice_from_source(&*r)) {
-                        Ok(()) => TransferState::Drain,
+                        Ok(_) => TransferState::Drain,
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => TransferState::Fill,
                         Err(e) => TransferState::faulted(e),
                     }

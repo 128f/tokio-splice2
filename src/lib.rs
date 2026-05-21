@@ -5,7 +5,6 @@ pub mod splice;
 pub mod io;
 pub mod pipe;
 pub mod traffic;
-pub mod utils;
 
 pub use splice::Splicer;
 pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceIo};
