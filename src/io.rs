@@ -52,14 +52,18 @@ enum TransferState {
     /// Flushing buffered data of `W`.
     Flushing,
 
-    /// Transfer is finished, `W` is shutting down.
-    Terminating,
+    /// We have terminated and will attempt to gracefully shutdown,
+    /// if there was an error it will be returned
+    Finished { error: Option<io::Error> },
+}
 
-    /// An error occurred during the transfer.
-    Faulted { error: Option<io::Error> },
-
-    /// Transfer is finished.
-    Finished,
+impl TransferState {
+    fn finished() -> Self {
+        Self::Finished { error: None }
+    }
+    fn faulted(error: io::Error) -> Self {
+        Self::Finished { error: Some(error) }
+    }
 }
 
 impl<R, W> SpliceIo<R, W>
@@ -103,48 +107,32 @@ where
         r: &mut R,
         w: &mut W,
     ) -> Poll<io::Result<()>> {
-        macro_rules! ready_or_cleanup {
-            ($e:expr, $next:ident) => {
-                match $e {
-                    Poll::Ready(Ok(t)) => t,
-                    Poll::Ready(Err(e)) => {
-                        $next = Some(TransferState::Faulted { error: Some(e) });
-                        continue;
-                    }
-                    Poll::Pending => {
-                        break Poll::Pending;
-                    }
-                }
-            };
-        }
-
-        let mut next_state: Option<TransferState> = None;
-
         loop {
-            if let Some(s) = next_state.take() {
-                self.state = s;
-            }
-
             crate::enter_tracing_span!(
                 "loop",
                 splicer = ?self.splicer,
                 state = ?self.state,
             );
 
-            match &mut self.state {
+            if let TransferState::Finished { error } = &mut self.state {
+                // Best effort to shutdown the writer.
+                ready!(Pin::new(&mut *w).poll_shutdown(cx))?;
+                break Poll::Ready(match error.take() {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                });
+            }
+
+            self.state = match self.state {
                 TransferState::Fill => {
                     // check if we're ready to read
                     ready!(r.poll_read_ready(cx))?;
                     // try to read, if EAGAIN then loop back and wait again
                     // side-effect: try_io_read will clear the readiness state if it returns EAGAIN, so we won't busy loop
-                    let read_result = r.try_io_read(|| self.splicer.try_splice_from_source(&*r));
-                    match read_result {
-                        Ok(()) => next_state = Some(TransferState::Drain),
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                        Err(e) => {
-                            next_state = Some(TransferState::Faulted { error: Some(e) });
-                            continue;
-                        }
+                    match r.try_io_read(|| self.splicer.try_splice_from_source(&*r)) {
+                        Ok(()) => TransferState::Drain,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => TransferState::Fill,
+                        Err(e) => TransferState::faulted(e),
                     }
                 }
                 TransferState::Drain => {
@@ -152,50 +140,21 @@ where
                     ready!(w.poll_write_ready(cx))?;
                     // try to write, if EAGAIN then loop back and wait again
                     // side-effect: try_io_write will clear the readiness state if it returns EAGAIN, so we won't busy loop
-                    let write_result = w.try_io_write(|| self.splicer.try_splice_to_dest(&*w));
-                    match write_result {
-                        Ok(()) => {
-                            next_state = match self.splicer.is_finished() {
-                                false => Some(TransferState::Flushing),
-                                true => Some(TransferState::Terminating),
-                            };
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                        Err(e) => {
-                            next_state = Some(TransferState::Faulted { error: Some(e) });
-                            continue;
-                        }
+                    match w.try_io_write(|| self.splicer.try_splice_to_dest(&*w)) {
+                        Ok(_) if self.splicer.is_finished() => TransferState::finished(),
+                        Ok(_) => TransferState::Flushing,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => TransferState::Drain,
+                        Err(e) => TransferState::faulted(e),
                     }
                 }
-                TransferState::Flushing => {
-                    ready_or_cleanup!(Pin::new(&mut *w).poll_flush(cx), next_state);
-
-                    next_state = Some(TransferState::Fill);
-                }
-                TransferState::Terminating => {
-                    ready_or_cleanup!(Pin::new(&mut *w).poll_shutdown(cx), next_state);
-
-                    next_state = Some(TransferState::Finished);
-                }
-                TransferState::Faulted { error } => {
-                    if error.is_some() {
-                        // Best effort to shutdown the writer.
-                        ready!(Pin::new(&mut *w).poll_shutdown(cx))?;
-                    }
-
-                    let Some(error) = error.take() else {
-                        break Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "`poll_execute()` called after error returned",
-                        )));
-                    };
-
-                    break Poll::Ready(Err(error));
-                }
-                TransferState::Finished => {
-                    break Poll::Ready(Ok(()));
-                }
-            }
+                TransferState::Flushing => match Pin::new(&mut *w).poll_flush(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(_)) => TransferState::Fill,
+                    Poll::Ready(Err(e)) => TransferState::faulted(e),
+                },
+                // we guard and return above this match
+                TransferState::Finished { .. } => unreachable!(),
+            };
         }
     }
 }
