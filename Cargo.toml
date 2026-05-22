@@ -1,5 +1,5 @@
 [package]
-name = "tokio-splice2"
+name = "splicer"
 version = "0.4.0"
 edition = "2021"
 rust-version = "1.70.0"
@@ -10,7 +10,7 @@ description = "splice(2) in tokio"
 keywords = ["tokio", "splice", "pipe", "async"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/hanyu-dev/tokio-splice2"
+repository = "https://github.com/128f/splicer"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
@@ -40,9 +40,6 @@ feat-tracing = ["dep:tracing"]
 
 # Enable crate `tracing` support and enable Level::TRACE log in release profile build.
 feat-tracing-trace = ["feat-tracing"]
-
-# Perform brutal shutdown instead of graceful shutdown.
-feat-brutal-shutdown = []
 
 # # Cache `Pipe`, avoid creating new pipe for each ctx.
 # feat-pipe-pool = ["dep:parking_lot", "tokio/sync"]

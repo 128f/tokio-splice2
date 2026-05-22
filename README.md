@@ -1,96 +1,90 @@
-# **tokio-splice2**  - The [`splice(2)`] syscall API wrapper, async Rust ready.
+# splicer
 
-[![Crates.io Version](https://img.shields.io/crates/v/tokio-splice2)](https://crates.io/crates/tokio-splice2)
-[![GitHub Tag](https://img.shields.io/github/v/tag/hanyu-dev/tokio-splice2)](https://github.com/hanyu-dev/tokio-splice2/tags)
-[![Documentation](https://img.shields.io/docsrs/tokio-splice2)](https://docs.rs/tokio-splice2)
-[![CI Check](https://img.shields.io/github/actions/workflow/status/hanyu-dev/tokio-splice2/rust.yml?branch=master)](https://github.com/hanyu-dev/tokio-splice2/actions?query=branch%master)
-[![License](https://img.shields.io/crates/l/tokio-splice2)](https://github.com/hanyu-dev/tokio-splice2/blob/master/LICENSE)
+Async [`splice(2)`] copy primitives for Tokio on Linux.
 
-Implemented [`splice(2)`] based unidirectional/bidirectional data transmission, just like [`tokio::io::copy_bidirectional`](https://docs.rs/tokio/latest/tokio/io/fn.copy_bidirectional.html).
+## What it does
 
-## Examples
+Three async entry points, all returning a [`TrafficResult`](src/traffic.rs)
+with bytes-in / bytes-out and the terminating error (if any):
 
-See [examples/proxy.rs](./examples/proxy.rs), with a [Go implementation](./examples/proxy.go) for comparison.
+```rust
+// Stream-to-stream, one direction.
+splicer::copy(&mut reader, &mut writer).await?;
 
-## Changelogs
+// Like `tokio::io::copy_bidirectional`, but on splice(2).
+splicer::copy_bidirectional(&mut left, &mut right).await?;
 
-- TODO:
+// sendfile-style: file -> socket, with optional byte range.
+splicer::sendfile(&mut file, &mut socket, len, start, end).await?;
+```
 
-  - Reuse pipe.
+`R` / `W` must be FDs the kernel will splice — TCP, Unix sockets, and (for
+the file entry points) `tokio::fs::File`. The [`AsyncReadFd`] / [`IsFile`]
+traits in [`src/io/fd.rs`](src/io/fd.rs) gatekeep this at compile time.
 
-- 0.3.0:
+For finer control — custom pipe size, byte caps, reusing the pipe across
+calls — drop down to [`Splicer`](src/splice/mod.rs) and
+[`SpliceIo`](src/io/mod.rs) directly.
 
-  - MSRV is now 1.70.0.
-  - Replace `libc` with `rustix`.
-  - Add `tracing` logger support.
-  - Add unidirectional copy.
-  - Returns `TrafficResult` instead of `io::Result<T>` to have traffic statistics returned when error occurs.
-  - (Experimental) Add `tokio::fs::File` support to splice from (like `sendfile`) / to (not fully tested).
+## Layering
 
-## MSRV
+- [`src/splice/`](src/splice/) — `Splicer<R, W>`: pure synchronous splice
+  mechanics. Owns the pipe, offset, and byte counters. No `Poll` / `Pin` /
+  `Context`. Testable without a runtime.
+- [`src/io/`](src/io/) — `SpliceIo` and `SpliceBidiIo`: the async state
+  machine wrapping `Splicer` and driving the underlying FDs through Tokio's
+  reactor.
+- [`src/pipe.rs`](src/pipe.rs), [`src/traffic.rs`](src/traffic.rs) — pipe
+  RAII and traffic accounting.
 
-1.70.0
+## Building and testing
 
-## Benchmark
+The crate is Linux-only. Local dev goes through the [`Justfile`](Justfile),
+which wraps `cargo` in a `rust:1-bookworm` docker container:
 
-While no formal benchmarks have been conducted, `iperf3` testing results indicate that the throughput is comparable to [tokio-splice] and _slightly_ outperforms the Go implementation.
+```sh
+just build           # cargo build --all-features
+just test            # cargo test  --all-features
+just clippy          # cargo clippy --all-features --all-targets -- -D warnings
+just fmt             # cargo fmt (runs on host)
+```
 
-## Limitations
+## Features
 
-- When splicing data from a file to a pipe and then splicing from the pipe
-  to a socket for transmission, the data is referenced from the page cache
-  corresponding to the file. If the original file is modified while the
-  splice operation is in progress (i.e., the data is still in the kernel
-  buffer and has not been fully sent to the network), there may be a
-  situation where the transmitted data is the old data (before
-  modification). Because there is no clear mechanism to know when the data
-  has truly "left" the kernel and been sent to the network, thus safely
-  allowing the file to be modified. Linus Torvalds once commented that this
-  is the "key point" of splice design, which shares references to data pages
-  and behaves similarly to `mmap()`. This is a complex issue concerning data
-  consistency and concurrent access.
+- `feat-tracing` — emit `tracing` events from the splice loop.
+- `feat-tracing-trace` — also enable `TRACE`-level events in release builds.
 
-  See [lwn.net/Articles/923237] and [rust#116451].
+## Caveats inherited from splice(2)
 
-  This crate requires passing `&mut R` to prevent modification elsewhere
-  before the `Future` of `splice(2)` I/O completes. However, this is just
-  best-effort guarantee.
+These are properties of the syscall, not the wrapper, and they all still
+apply:
 
-- In certain cases, such as transferring small chunks of data, frequently
-  calling splice, or when the underlying driver/hardware does not support
-  efficient zero-copy, the performance improvement may not meet
-  expectations. It could even be lower than an optimized read/write loop due
-  to additional system call overhead. The choice of pipe buffer size may
-  also affect performance.
+- **Page-cache aliasing on file input.** `splice` from a file shares
+  references to page-cache pages, much like `mmap`. If the file is modified
+  while bytes are still queued in the destination's kernel buffer, the peer
+  may see the new contents. The crate takes `&mut R` as a best-effort guard;
+  it can't prevent another process from rewriting the file. See
+  [lwn.net/Articles/923237] and [rust#116451].
+- **Bytes returned ≠ bytes on the wire.** A successful `splice` only means
+  the bytes hit the destination FD's kernel buffer. The bidi path issues a
+  `poll_flush` at end-of-stream, but a misbehaving `AsyncWrite` impl can
+  still defer the actual flush.
+- **Small / chatty transfers can lose to read+write.** Per-call overhead and
+  pipe-buffer sizing matter; splice isn't a free win on every workload.
+- **UDP isn't covered.** `splice` doesn't help; use `sendmmsg` / `recvmmsg`
+  or XDP.
 
-- A successful [`splice(2)`] call returns the number of bytes transferred,
-  but this ONLY indicates that the data has entered the kernel buffer of the
-  destination file descriptor (such as the send buffer of a socket). It does
-  not mean the data has actually left the local network interface or been
-  received by the peer.
+## License
 
-  We call `flush` / `poll_flush` after bytes data is spliced from pipe to
-  the target fd to ensure that it has been flushed to the destination.
-  However, poor implementation of `tokio::io::AsyncWrite`
-  may break this, as they may not flush the data immediately.
+MIT OR Apache-2.0, same as upstream. See [LICENSE](LICENSE).
 
-- For UDP _zero-copy_ I/O, `splice(2)` does not help. Linux kernel actually
-  pays less attention optimizing UDP performance.
-
-  Consider using `sendmmsg` and `recvmmsg` instead, which is a more efficient
-  way to send/receive multiple UDP packets in a single system call. eBPF XDP
-  is also a good choice for high-performance stateless UDP packet forwarding.
-
-
-## LICENSE
-
-MIT OR Apache-2.0
-
-## Credits
-
-[tokio-splice]
+Derived from [hanyu-dev/tokio-splice2] (Apache-2.0 / MIT), itself derived
+from [Hanaasagi/tokio-splice]. Thanks to both.
 
 [`splice(2)`]: https://man7.org/linux/man-pages/man2/splice.2.html
+[`AsyncReadFd`]: src/io/fd.rs
+[`IsFile`]: src/io/fd.rs
+[hanyu-dev/tokio-splice2]: https://github.com/hanyu-dev/tokio-splice2
+[Hanaasagi/tokio-splice]: https://github.com/Hanaasagi/tokio-splice
 [lwn.net/Articles/923237]: https://lwn.net/Articles/923237/
 [rust#116451]: https://github.com/rust-lang/rust/issues/116451
-[tokio-splice]: https://github.com/Hanaasagi/tokio-splice

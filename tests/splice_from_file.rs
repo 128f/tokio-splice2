@@ -66,7 +66,7 @@ async fn splice_from_file(
 
     assert_eq!(r_len, FILE_CONTENT.len() as u64);
 
-    tokio_splice2::sendfile(&mut r, w, r_len, f_offset_start, f_offset_end).await?;
+    splicer::sendfile(&mut r, w, r_len, f_offset_start, f_offset_end).await?;
 
     Ok(())
 }
