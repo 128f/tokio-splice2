@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -16,6 +17,8 @@ import (
 func main() {
 	fmt.Printf("PID is %d\n", os.Getpid())
 
+	listenAddr, upstreamAddr := parseArgs()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -23,7 +26,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		if err := serve(ctx); err != nil {
+		if err := serve(ctx, listenAddr, upstreamAddr); err != nil {
 			log.Printf("Serve failed: %v", err)
 		}
 	}()
@@ -35,12 +38,25 @@ func main() {
 	time.Sleep(100 * time.Millisecond)
 }
 
-func serve(ctx context.Context) error {
-	listenAddr := os.Getenv("EXAMPLE_LISTEN_ADDR")
-	if listenAddr == "" {
-		listenAddr = "0.0.0.0:5201"
+func parseArgs() (string, string) {
+	if len(os.Args) != 3 {
+		fmt.Fprintf(os.Stderr, "usage: %s <listen_port> <upstream_port>\n", os.Args[0])
+		os.Exit(2)
 	}
+	listenPort, err := strconv.ParseUint(os.Args[1], 10, 16)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid listen port: %v\n", err)
+		os.Exit(2)
+	}
+	upstreamPort, err := strconv.ParseUint(os.Args[2], 10, 16)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid upstream port: %v\n", err)
+		os.Exit(2)
+	}
+	return fmt.Sprintf("0.0.0.0:%d", listenPort), fmt.Sprintf("127.0.0.1:%d", upstreamPort)
+}
 
+func serve(ctx context.Context, listenAddr, upstreamAddr string) error {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
@@ -75,19 +91,14 @@ func serve(ctx context.Context) error {
 		remoteAddr := conn.RemoteAddr()
 		fmt.Printf("Process incoming connection from %s\n", remoteAddr)
 
-		go forwarding(conn)
+		go forwarding(conn, upstreamAddr)
 	}
 }
 
-func forwarding(stream1 net.Conn) error {
+func forwarding(stream1 net.Conn, upstreamAddr string) error {
 	defer stream1.Close()
 
-	remoteAddr := os.Getenv("EXAMPLE_REMOTE_ADDR")
-	if remoteAddr == "" {
-		remoteAddr = "127.0.0.1:5202"
-	}
-
-	stream2, err := net.Dial("tcp", remoteAddr)
+	stream2, err := net.Dial("tcp", upstreamAddr)
 	if err != nil {
 		log.Printf("Failed to connect to remote server: %v", err)
 		return err

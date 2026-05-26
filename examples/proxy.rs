@@ -1,6 +1,6 @@
 //! Example: simple L4 proxy
 
-use std::{env, io};
+use std::{env, io, process};
 
 use tokio::net::{TcpListener, TcpStream};
 
@@ -8,6 +8,8 @@ use tokio::net::{TcpListener, TcpStream};
 #[tokio::main]
 async fn main() -> io::Result<()> {
     println!("PID is {}", std::process::id());
+
+    let (listen_addr, upstream_addr) = parse_args();
 
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::layer::SubscriberExt;
@@ -31,7 +33,7 @@ async fn main() -> io::Result<()> {
         .init();
 
     tokio::select! {
-        res = serve() => {
+        res = serve(listen_addr, upstream_addr) => {
             if let Err(err) = res {
                 eprintln!("Serve failed {err}");
             }
@@ -44,11 +46,22 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-async fn serve() -> io::Result<()> {
-    let listener = TcpListener::bind(
-        env::var("EXAMPLE_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:5201".to_string()),
+fn parse_args() -> (String, String) {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 3 {
+        eprintln!("usage: {} <listen_port> <upstream_port>", args[0]);
+        process::exit(2);
+    }
+    let listen_port: u16 = args[1].parse().expect("invalid listen port");
+    let upstream_port: u16 = args[2].parse().expect("invalid upstream port");
+    (
+        format!("0.0.0.0:{listen_port}"),
+        format!("127.0.0.1:{upstream_port}"),
     )
-    .await?;
+}
+
+async fn serve(listen_addr: String, upstream_addr: String) -> io::Result<()> {
+    let listener = TcpListener::bind(&listen_addr).await?;
 
     loop {
         let (incoming, remote_addr) = match listener.accept().await {
@@ -65,15 +78,12 @@ async fn serve() -> io::Result<()> {
 
         println!("Process incoming connection from {remote_addr}");
 
-        tokio::spawn(forwarding(incoming));
+        tokio::spawn(forwarding(incoming, upstream_addr.clone()));
     }
 }
 
-async fn forwarding(mut stream1: TcpStream) -> io::Result<()> {
-    let stream2 = TcpStream::connect(
-        env::var("EXAMPLE_REMOTE_ADDR").unwrap_or_else(|_| "127.0.0.1:5202".to_string()),
-    )
-    .await;
+async fn forwarding(mut stream1: TcpStream, upstream_addr: String) -> io::Result<()> {
+    let stream2 = TcpStream::connect(&upstream_addr).await;
 
     let mut stream2 = match stream2 {
         Ok(s) => s,
