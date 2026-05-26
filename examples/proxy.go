@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"sync"
 	"syscall"
@@ -16,6 +17,16 @@ import (
 
 func main() {
 	fmt.Printf("PID is %d\n", os.Getpid())
+
+	// Go creates splice pipes internally and doesn't expose them; it requests
+	// 1 MiB (internal/poll.maxSpliceSize), but the kernel caps that at
+	// fs.pipe-max-size (and stays at the 64 KiB default if the request fails).
+	var pipeMax int
+	if b, err := os.ReadFile("/proc/sys/fs/pipe-max-size"); err == nil {
+		fmt.Sscan(string(b), &pipeMax)
+	}
+	fmt.Printf("GOMAXPROCS: %d, splice pipe: requests %d bytes, fs.pipe-max-size = %d bytes (per direction, 2 per connection)\n",
+		runtime.GOMAXPROCS(0), 1<<20, pipeMax)
 
 	listenAddr, upstreamAddr := parseArgs()
 

@@ -32,6 +32,12 @@ async fn main() -> io::Result<()> {
         // .with(console_subscriber::spawn())
         .init();
 
+    let worker_threads = tokio::runtime::Handle::current().metrics().num_workers();
+    let pipe_size = splicer::pipe::Pipe::new()?.size();
+    println!(
+        "tokio worker threads: {worker_threads}, splice pipe size: {pipe_size} bytes (per direction, 2 per connection)"
+    );
+
     tokio::select! {
         res = serve(listen_addr, upstream_addr) => {
             if let Err(err) = res {
