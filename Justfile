@@ -29,7 +29,7 @@ shell:
 
 # Build the splicer-based Rust proxy into target/perf/proxy-rust
 build-perf-rust:
-    {{docker}} cargo build --release --all-features --example proxy
+    cargo build --release --all-features --example proxy
     mkdir -p {{perf_dir}}
     cp target/release/examples/proxy {{perf_dir}}/proxy-rust
 
