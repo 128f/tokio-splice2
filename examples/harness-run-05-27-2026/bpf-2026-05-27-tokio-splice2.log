@@ -1,0 +1,40 @@
+
+=== 2026-05-27T21:00:42.142722+00:00 tokio-splice2 pid=717482 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 32702
+@[tracepoint:syscalls:sys_enter_splice]: 4680410
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5225664
+
+
+
+=== 2026-05-27T21:01:27.796858+00:00 tokio-splice2 pid=718066 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 34227
+@[tracepoint:syscalls:sys_enter_splice]: 4749815
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5179044
+
+
+
+=== 2026-05-27T21:04:30.096825+00:00 tokio-splice2 pid=720307 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 34031
+@[tracepoint:syscalls:sys_enter_splice]: 4758195
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5146203
+
+
+
+=== 2026-05-27T21:05:15.751947+00:00 tokio-splice2 pid=720580 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 31406
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 4840267
+@[tracepoint:syscalls:sys_enter_splice]: 5360527
+
+
+
+=== 2026-05-27T21:08:18.734682+00:00 tokio-splice2 pid=722724 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 33208
+@[tracepoint:syscalls:sys_enter_splice]: 4583023
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5375712
+
+

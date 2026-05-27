@@ -8,6 +8,7 @@ Logs (LOG_TAG defaults to today's date):
   perf-<tag>.log             harness events (start/markers/cooldown/done)
   perf-<tag>-<artifact>.log  iperf client output for that artifact
   cpu-<tag>-<artifact>.log   pidstat samples for that artifact's proxy
+  bpf-<tag>-<artifact>.log   bpftrace syscall counts for that artifact's proxy
 """
 import os
 import random
@@ -29,7 +30,7 @@ LOG = os.path.join(LOG_DIR, f"perf-{TAG}.log")   # harness events; per-artifact 
 
 PROXY_GO = os.environ.get("PROXY_GO", "./target/perf/proxy-go")
 PROXY_RUST = os.environ.get("PROXY_RUST", "./target/perf/proxy-rust")
-PROXY_UPSTREAM = os.environ.get("PROXY_UPSTREAM", "./target/perf/proxy-upstream")
+PROXY_UPSTREAM = os.environ.get("PROXY_UPSTREAM", "./target/release/examples/proxy")
 
 # CPU pinning + ports, straight from the README
 IPERF_SRV_CPUS = "4,20"
@@ -42,6 +43,25 @@ PROXY_PORT = 5200   # proxy front door
 ARTIFACTS = ["baseline", "golang", "splicer", "tokio-splice2"]
 
 HAVE_PIDSTAT = shutil.which("pidstat") is not None
+HAVE_BPFTRACE = shutil.which("bpftrace") is not None
+
+BPF_SCRIPT = """
+tracepoint:syscalls:sys_enter_splice,
+tracepoint:syscalls:sys_enter_read,
+tracepoint:syscalls:sys_enter_write,
+tracepoint:syscalls:sys_enter_readv,
+tracepoint:syscalls:sys_enter_writev,
+tracepoint:syscalls:sys_enter_epoll_wait,
+tracepoint:syscalls:sys_enter_epoll_pwait
+/pid == {pid}/
+{{
+    @[probe] = count();
+}}
+
+interval:s:{duration} {{ exit(); }}
+
+END {{ print(@); clear(@); }}
+"""
 
 
 def log(msg):
@@ -57,6 +77,10 @@ def perf_log(artifact):
 
 def cpu_log(artifact):
     return os.path.join(LOG_DIR, f"cpu-{TAG}-{artifact}.log")
+
+
+def bpf_log(artifact):
+    return os.path.join(LOG_DIR, f"bpf-{TAG}-{artifact}.log")
 
 
 def spawn(cmd, env=None):
@@ -97,6 +121,28 @@ def start_cpu_monitor(artifact, pid):
     return proc, f
 
 
+def start_bpf_monitor(artifact, pid):
+    """bpftrace syscall counts on the proxy, output -> bpf_log(artifact).
+
+    `-B line` forces line buffering so partial output survives an abrupt exit.
+    Self-terminates after DURATION via `interval:s:N { exit(); }`, which also
+    flushes the @ map on exit. Runs under sudo (bpftrace needs CAP_BPF); the
+    child inherits the harness's tty so sudo can find its cached timestamp
+    (primed at startup), instead of failing with "no tty" under setsid.
+    """
+    if not HAVE_BPFTRACE:
+        return None, None
+    f = open(bpf_log(artifact), "a")
+    f.write(f"\n=== {datetime.now(timezone.utc).isoformat()} {artifact} pid={pid} ===\n")
+    f.flush()
+    script = BPF_SCRIPT.format(pid=pid, duration=DURATION)
+    proc = subprocess.Popen(
+        ["sudo", "-n", "bpftrace", "-B", "line", "-e", script],
+        stdout=f, stderr=f,
+    )
+    return proc, f
+
+
 def run_test(artifact):
     """Start backends, run the client (logged), tear backends down."""
     procs = [spawn(["taskset", "-c", IPERF_SRV_CPUS, "iperf3", "-s", "-p", str(IPERF_PORT)])]
@@ -117,10 +163,16 @@ def run_test(artifact):
         procs.append(proxy)
 
     cpu_proc = cpu_file = None
+    bpf_proc = bpf_file = None
     try:
-        time.sleep(1)  # let server + proxy bind
-        if proxy is not None and proxy.poll() is None:
-            cpu_proc, cpu_file = start_cpu_monitor(artifact, proxy.pid)
+        time.sleep(5)  # let server + proxy bind
+        if proxy is not None:
+            if proxy.poll() is None:
+                cpu_proc, cpu_file = start_cpu_monitor(artifact, proxy.pid)
+                bpf_proc, bpf_file = start_bpf_monitor(artifact, proxy.pid)
+            else:
+                log(f"WARN: proxy for {artifact} exited (rc={proxy.returncode}) "
+                    f"during warmup; skipping cpu/bpf monitors")
         subprocess.run(
             ["taskset", "-c", IPERF_CLI_CPUS, "iperf3", "-c", "127.0.0.1",
              "-p", str(port), "-t", str(DURATION), "--logfile", perf_log(artifact)],
@@ -133,10 +185,23 @@ def run_test(artifact):
                 os.killpg(cpu_proc.pid, signal.SIGTERM)
         if cpu_file is not None:
             cpu_file.close()
+        if bpf_proc is not None and bpf_proc.poll() is None:
+            try:
+                bpf_proc.wait(timeout=10)  # self-exits via interval:s:DURATION
+            except subprocess.TimeoutExpired:
+                subprocess.run(["sudo", "kill", "-INT", str(bpf_proc.pid)])
+                try:
+                    bpf_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(["sudo", "kill", "-KILL", str(bpf_proc.pid)])
+        if bpf_file is not None:
+            bpf_file.close()
         kill(procs)
 
 
 def main():
+    global HAVE_BPFTRACE
+
     queue = [a for a in ARTIFACTS for _ in range(REPEATS)]
     random.shuffle(queue)
 
@@ -146,6 +211,21 @@ def main():
         log(f"cpu: pidstat on proxy (cpus {CPU_MON_CPUS}) -> cpu-{TAG}-<artifact>.log")
     else:
         log("cpu: pidstat not found on PATH, skipping CPU measurement")
+    if HAVE_BPFTRACE:
+        # Don't prompt for sudo from inside the script — pty weirdness with
+        # python subprocesses has burned us. Just check whether the user has
+        # already primed sudo (e.g. `sudo -v` from their shell beforehand) and
+        # skip bpftrace cleanly if not. Gap between spawns is ~DURATION+COOLDOWN,
+        # well under sudo's default 5min timeout, so one prime covers the run.
+        verify = subprocess.run(["sudo", "-n", "true"], capture_output=True, text=True)
+        if verify.returncode != 0:
+            HAVE_BPFTRACE = False
+            log("bpf: sudo not primed, skipping syscall tracing "
+                "(run `sudo -v` then re-run the harness to enable)")
+        else:
+            log(f"bpf: bpftrace syscall counts on proxy (sudo) -> bpf-{TAG}-<artifact>.log")
+    else:
+        log("bpf: bpftrace not found on PATH, skipping syscall tracing")
     for i, artifact in enumerate(queue):
         log(f"=== test {i + 1}/{len(queue)}: {artifact} ===")
         run_test(artifact)

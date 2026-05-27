@@ -4,8 +4,8 @@ use std::{env, io, process};
 
 use tokio::net::{TcpListener, TcpStream};
 
-// #[tokio::main(flavor = "current_thread")]
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
+// #[tokio::main]
 async fn main() -> io::Result<()> {
     println!("PID is {}", std::process::id());
 

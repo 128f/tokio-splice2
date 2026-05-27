@@ -1,0 +1,40 @@
+
+=== 2026-05-27T20:59:10.792901+00:00 splicer pid=716586 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 32349
+@[tracepoint:syscalls:sys_enter_splice]: 4522803
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5360751
+
+
+
+=== 2026-05-27T20:59:56.447903+00:00 splicer pid=716840 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 32532
+@[tracepoint:syscalls:sys_enter_splice]: 4500866
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5383561
+
+
+
+=== 2026-05-27T21:03:44.343012+00:00 splicer pid=719640 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 36635
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5179364
+@[tracepoint:syscalls:sys_enter_splice]: 5289297
+
+
+
+=== 2026-05-27T21:06:01.456878+00:00 splicer pid=721211 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 34286
+@[tracepoint:syscalls:sys_enter_splice]: 4812756
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5185519
+
+
+
+=== 2026-05-27T21:10:34.402587+00:00 splicer pid=724213 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_write]: 35973
+@[tracepoint:syscalls:sys_enter_splice]: 5200590
+@[tracepoint:syscalls:sys_enter_epoll_wait]: 5298749
+
+

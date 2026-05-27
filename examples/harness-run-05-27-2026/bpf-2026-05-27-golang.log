@@ -1,0 +1,45 @@
+
+=== 2026-05-27T21:02:13.450670+00:00 golang pid=718789 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_read]: 7
+@[tracepoint:syscalls:sys_enter_write]: 9
+@[tracepoint:syscalls:sys_enter_epoll_pwait]: 4064835
+@[tracepoint:syscalls:sys_enter_splice]: 6813667
+
+
+
+=== 2026-05-27T21:06:47.110843+00:00 golang pid=721791 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_read]: 12
+@[tracepoint:syscalls:sys_enter_write]: 14
+@[tracepoint:syscalls:sys_enter_epoll_pwait]: 5744315
+@[tracepoint:syscalls:sys_enter_splice]: 5813071
+
+
+
+=== 2026-05-27T21:07:32.947035+00:00 golang pid=722070 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_read]: 11
+@[tracepoint:syscalls:sys_enter_write]: 13
+@[tracepoint:syscalls:sys_enter_splice]: 5684320
+@[tracepoint:syscalls:sys_enter_epoll_pwait]: 6056048
+
+
+
+=== 2026-05-27T21:12:05.114342+00:00 golang pid=725434 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_read]: 8
+@[tracepoint:syscalls:sys_enter_write]: 10
+@[tracepoint:syscalls:sys_enter_epoll_pwait]: 4942418
+@[tracepoint:syscalls:sys_enter_splice]: 6239999
+
+
+
+=== 2026-05-27T21:12:50.950184+00:00 golang pid=725717 ===
+Attached 9 probes
+@[tracepoint:syscalls:sys_enter_read]: 11
+@[tracepoint:syscalls:sys_enter_write]: 13
+@[tracepoint:syscalls:sys_enter_splice]: 4887096
+@[tracepoint:syscalls:sys_enter_epoll_pwait]: 7442383
+
+
