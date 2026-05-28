@@ -1,6 +1,8 @@
 //! `splice(2)` operation state and primitives.
 
 pub(crate) mod exec;
+#[cfg(test)]
+pub(crate) mod mock;
 mod util;
 
 pub use self::exec::{Live, Splicer};
@@ -150,6 +152,24 @@ impl<R, W> SpliceCtx<R, W, Live> {
                     io::Error::new(io::ErrorKind::InvalidInput, "splice range too large")
                 })?,
             ..Self::new_inner()?
+        })
+    }
+}
+
+#[cfg(test)]
+impl<R, W, S> SpliceCtx<R, W, S> {
+    /// Test-only constructor that lets a test wire in its own [`Splicer`]
+    /// implementation. Always takes the `IsNotFile`/`IsNotFile` shape.
+    pub(crate) fn new_with_splicer(splicer: S) -> io::Result<Self> {
+        Ok(Self {
+            splicer,
+            offset: Offset::None,
+            size_to_splice: isize::MAX as usize,
+            pipe: Pipe::new()?,
+            bytes_read: 0,
+            bytes_written: 0,
+            r: PhantomData,
+            w: PhantomData,
         })
     }
 }

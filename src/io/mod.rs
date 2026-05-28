@@ -1,6 +1,8 @@
 //! `splice(2)` I/O implementation.
 
 mod fd;
+#[cfg(test)]
+pub(crate) mod mock;
 
 pub use fd::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile};
 
@@ -36,6 +38,19 @@ impl<R, W, S> ops::Deref for SpliceIo<R, W, S> {
 
     fn deref(&self) -> &Self::Target {
         &self.splicer
+    }
+}
+
+#[cfg(test)]
+impl<R, W, S> SpliceIo<R, W, S> {
+    /// Test-only: short name of the current [`TransferState`] discriminant.
+    pub(crate) fn state_name(&self) -> &'static str {
+        match self.state {
+            TransferState::Fill => "Fill",
+            TransferState::Drain => "Drain",
+            TransferState::Flushing => "Flushing",
+            TransferState::Finished { .. } => "Finished",
+        }
     }
 }
 
@@ -247,5 +262,105 @@ where
             (Poll::Ready(Ok(())), Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
             (Poll::Ready(Err(e)), _) | (_, Poll::Ready(Err(e))) => Poll::Ready(Err(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::task::{Context, Poll};
+
+    use super::mock::{MockFd, TryIo};
+    use super::{SpliceIo, TransferState};
+    use crate::splice::mock::MockSplicer;
+    use crate::splice::SpliceCtx;
+
+    fn noop_cx() -> Context<'static> {
+        Context::from_waker(std::task::Waker::noop())
+    }
+
+    /// Partial write: reader supplies 8000 bytes, writer drains only 3000 in
+    /// the first round, then both FDs go idle. 5000 bytes are still buffered
+    /// in the pipe, so the state machine must park on the writer (Drain) —
+    /// parking on the reader would deadlock once the source has no more to
+    /// give.
+    #[test]
+    fn partial_write_parks_on_writer() {
+        // 8k bytes go into the pipe, 3k bytes go out ->
+        // 5k bytes are sitting in the pipe, waiting to be drained
+        let splicer = MockSplicer::new()
+            .script_in([Ok(8000)])
+            .script_out([Ok(3000)]);
+
+        // cause the reader to report it's ready,
+        // then call the splicer, consuming the first 8k bytes
+        let mut reader = MockFd::new()
+            .unwrap()
+            .script_read_ready([Poll::Ready(Ok(()))])
+            .script_try_io_read([TryIo::CallInner]);
+
+        // cause the reader to report it's ready,
+        // then call the splicer, writing the 3k bytes
+        // the pipe should now contain the 5k bytes
+        let mut writer = MockFd::new()
+            .unwrap()
+            .script_write_ready([Poll::Ready(Ok(()))])
+            .script_try_io_write([TryIo::CallInner]);
+
+        // run a SpliceIo state machine with the above scripted events
+        let ctx: SpliceCtx<MockFd, MockFd, MockSplicer> =
+            SpliceCtx::new_with_splicer(splicer).unwrap();
+        let mut io: SpliceIo<MockFd, MockFd, MockSplicer> = ctx.into();
+
+        // poll with the dummy waker
+        // state machine should begin spinning
+        // and the task will end up parked on the writer,
+        // since the pipe is not empty
+        let mut cx = noop_cx();
+        let poll = io.poll_execute(&mut cx, &mut reader, &mut writer);
+
+        assert!(matches!(poll, Poll::Pending));
+        assert_eq!(io.bytes_read(), 8000);
+        assert_eq!(io.bytes_written(), 3000);
+        assert_eq!(io.state_name(), "Drain");
+    }
+
+    /// Clean drain in one poll: full splice in, full splice out, EOF.
+    #[test]
+    fn clean_drain_finishes() {
+        // read 1000 bytes into the pipe, then EOF (0 bytes) ->
+        // then write the 1000 bytes out in one shot
+        let splicer = MockSplicer::new()
+            .script_in([Ok(1000), Ok(0)])
+            .script_out([Ok(1000)]);
+
+        // reader reports ready, once for read and once for EOF
+        // then allow the splice to go through twice
+        let mut reader = MockFd::new()
+            .unwrap()
+            .script_read_ready([Poll::Ready(Ok(())), Poll::Ready(Ok(()))])
+            .script_try_io_read([TryIo::CallInner, TryIo::CallInner]);
+
+        // Report ready for read twice,
+        // and allow two splice operations,
+        // the second splice operation will not actually happen,
+        // since the meter will report all bytes have been read
+        let mut writer = MockFd::new()
+            .unwrap()
+            .script_write_ready([Poll::Ready(Ok(())), Poll::Ready(Ok(()))])
+            .script_try_io_write([TryIo::CallInner, TryIo::CallInner]);
+
+        // script and confirm we reach a Finished state
+        // due to the EOF, and the meter reports all bytes read/written correctly
+        let ctx: SpliceCtx<MockFd, MockFd, MockSplicer> =
+            SpliceCtx::new_with_splicer(splicer).unwrap();
+        let mut io: SpliceIo<MockFd, MockFd, MockSplicer> = ctx.into();
+
+        let mut cx = noop_cx();
+        let poll = io.poll_execute(&mut cx, &mut reader, &mut writer);
+
+        assert!(matches!(poll, Poll::Ready(Ok(()))));
+        assert_eq!(io.bytes_read(), 1000);
+        assert_eq!(io.bytes_written(), 1000);
+        assert!(matches!(io.state, TransferState::Finished { error: None }));
     }
 }
