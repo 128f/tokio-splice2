@@ -7,32 +7,40 @@ pub use fd::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile};
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
-use std::{io, ops};
+use std::{fmt, io, ops};
 
-use crate::splice::SpliceCtx;
+use crate::splice::{Live, SpliceCtx, Splicer};
 use crate::traffic::TrafficResult;
 
-#[derive(Debug)]
 /// Zero-copy unidirectional I/O with `splice(2)`.
 ///
 /// For bidirectional I/O version, see [`SpliceBidiIo`].
 ///
 /// Notice: see the [module-level documentation](crate) for known limitations.
-pub struct SpliceIo<R, W> {
-    splicer: SpliceCtx<R, W>,
+pub struct SpliceIo<R, W, S = Live> {
+    splicer: SpliceCtx<R, W, S>,
     state: TransferState,
 }
 
-impl<R, W> ops::Deref for SpliceIo<R, W> {
-    type Target = SpliceCtx<R, W>;
+impl<R, W, S> fmt::Debug for SpliceIo<R, W, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpliceIo")
+            .field("splicer", &self.splicer)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+impl<R, W, S> ops::Deref for SpliceIo<R, W, S> {
+    type Target = SpliceCtx<R, W, S>;
 
     fn deref(&self) -> &Self::Target {
         &self.splicer
     }
 }
 
-impl<R, W> From<SpliceCtx<R, W>> for SpliceIo<R, W> {
-    fn from(splicer: SpliceCtx<R, W>) -> Self {
+impl<R, W, S> From<SpliceCtx<R, W, S>> for SpliceIo<R, W, S> {
+    fn from(splicer: SpliceCtx<R, W, S>) -> Self {
         SpliceIo {
             splicer,
             state: TransferState::Fill,
@@ -65,10 +73,11 @@ impl TransferState {
     }
 }
 
-impl<R, W> SpliceIo<R, W>
+impl<R, W, S> SpliceIo<R, W, S>
 where
     R: AsyncReadFd,
     W: AsyncWriteFd,
+    S: Splicer,
 {
     /// Performs zero-copy data transfer from reader `R` to writer `W` using the
     /// splice syscall.
@@ -158,20 +167,30 @@ where
     }
 }
 
-#[derive(Debug)]
 /// Bidirectional splice I/O, combining two `SpliceIo` instances.
-pub struct SpliceBidiIo<SL, SR> {
+pub struct SpliceBidiIo<SL, SR, S1 = Live, S2 = Live> {
     /// Splice I/O instance, from `SL` to `SR`.
-    pub io_sl2sr: SpliceIo<SL, SR>,
+    pub io_sl2sr: SpliceIo<SL, SR, S1>,
 
     /// Splice I/O instance, from `SR` to `SL`.
-    pub io_sr2sl: SpliceIo<SR, SL>,
+    pub io_sr2sl: SpliceIo<SR, SL, S2>,
 }
 
-impl<SL, SR> SpliceBidiIo<SL, SR>
+impl<SL, SR, S1, S2> fmt::Debug for SpliceBidiIo<SL, SR, S1, S2> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpliceBidiIo")
+            .field("io_sl2sr", &self.io_sl2sr)
+            .field("io_sr2sl", &self.io_sr2sl)
+            .finish()
+    }
+}
+
+impl<SL, SR, S1, S2> SpliceBidiIo<SL, SR, S1, S2>
 where
     SL: AsyncReadFd + AsyncWriteFd + IsNotFile,
     SR: AsyncReadFd + AsyncWriteFd + IsNotFile,
+    S1: Splicer,
+    S2: Splicer,
 {
     /// Performs zero-copy data transfer between `SL` and `SR` using the
     /// splice syscall.

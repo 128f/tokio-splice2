@@ -3,6 +3,8 @@
 pub(crate) mod exec;
 mod util;
 
+pub use self::exec::{Live, Splicer};
+
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::os::fd::AsFd;
@@ -15,7 +17,9 @@ use crate::traffic::TrafficResult;
 
 /// State for a `splice(2)` operation: the pipe used as the kernel-side buffer,
 /// the byte counters, and any file offset.
-pub struct SpliceCtx<R, W> {
+pub struct SpliceCtx<R, W, S = Live> {
+    /// Performs the actual `splice(2)` calls. Defaults to [`Live`].
+    splicer: S,
     /// The `off_in` when splicing from `R` to the pipe, or the `off_out` when
     /// splicing from the pipe to `W`.
     offset: Offset,
@@ -36,7 +40,7 @@ pub struct SpliceCtx<R, W> {
     w: PhantomData<W>,
 }
 
-impl<R, W> fmt::Debug for SpliceCtx<R, W> {
+impl<R, W, S> fmt::Debug for SpliceCtx<R, W, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpliceCtx")
             .field("offset", &self.offset)
@@ -48,10 +52,11 @@ impl<R, W> fmt::Debug for SpliceCtx<R, W> {
     }
 }
 
-impl<R, W> SpliceCtx<R, W> {
+impl<R, W> SpliceCtx<R, W, Live> {
     #[inline]
     fn new_inner() -> io::Result<Self> {
         Ok(Self {
+            splicer: Live,
             offset: Offset::None,
             size_to_splice: isize::MAX as usize,
             pipe: Pipe::new()?,
@@ -76,23 +81,6 @@ impl<R, W> SpliceCtx<R, W> {
         W: IsNotFile,
     {
         Self::new_inner()
-    }
-
-    #[must_use]
-    #[inline]
-    /// Set the target number of bytes to copy from `R` to `W`.
-    ///
-    /// If `R` or `W` is a file, use [`with_input_file`](Self::with_input_file)
-    /// or [`with_output_file`](Self::with_output_file) instead.
-    pub fn with_target_len(self, size_to_splice: usize) -> Self
-    where
-        R: IsNotFile,
-        W: IsNotFile,
-    {
-        Self {
-            size_to_splice,
-            ..self
-        }
     }
 
     #[inline]
@@ -164,6 +152,25 @@ impl<R, W> SpliceCtx<R, W> {
             ..Self::new_inner()?
         })
     }
+}
+
+impl<R, W, S> SpliceCtx<R, W, S> {
+    #[must_use]
+    #[inline]
+    /// Set the target number of bytes to copy from `R` to `W`.
+    ///
+    /// If `R` or `W` is a file, use [`with_input_file`](Self::with_input_file)
+    /// or [`with_output_file`](Self::with_output_file) instead.
+    pub fn with_target_len(self, size_to_splice: usize) -> Self
+    where
+        R: IsNotFile,
+        W: IsNotFile,
+    {
+        Self {
+            size_to_splice,
+            ..self
+        }
+    }
 
     #[inline]
     /// Set the pipe size in bytes.
@@ -183,7 +190,7 @@ impl<R, W> SpliceCtx<R, W> {
     }
 }
 
-impl<R, W> SpliceCtx<R, W> {
+impl<R, W, S> SpliceCtx<R, W, S> {
     #[must_use]
     #[inline]
     /// Returns bytes that have been read from `R`.
@@ -234,10 +241,22 @@ impl<R, W> SpliceCtx<R, W> {
     }
 }
 
-impl<R: AsFd, W> SpliceCtx<R, W> {
+impl<R: AsFd, W, S: Splicer> SpliceCtx<R, W, S> {
     #[inline]
     pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<usize> {
-        let n = exec::try_splice_from_source(self, r)?;
+        let bytes_remaining = self.size_to_splice - self.bytes_read;
+        if bytes_remaining == 0 {
+            self.pipe.set_write_side_done();
+            return Ok(0);
+        }
+        let pipe_w = self
+            .pipe
+            .write_side_fd()
+            .expect("Caller must check is_finished() before calling")
+            .as_fd();
+        let n = self
+            .splicer
+            .splice_in(r, self.offset.off_in(), pipe_w, bytes_remaining)?;
         if n == 0 {
             self.pipe.set_write_side_done();
         } else {
@@ -247,10 +266,24 @@ impl<R: AsFd, W> SpliceCtx<R, W> {
     }
 }
 
-impl<R, W: AsFd> SpliceCtx<R, W> {
+impl<R, W: AsFd, S: Splicer> SpliceCtx<R, W, S> {
     #[inline]
     pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<usize> {
-        let n = exec::try_splice_to_destination(self, w)?;
+        let bytes_remaining = self.bytes_read - self.bytes_written;
+        if bytes_remaining == 0 {
+            return Ok(0);
+        }
+        let pipe_r = self
+            .pipe
+            .read_side_fd()
+            .expect("Caller must check is_finished() before calling")
+            .as_fd();
+        let n = self
+            .splicer
+            .splice_out(pipe_r, w, self.offset.off_out(), bytes_remaining)?;
+        if n == 0 {
+            panic!("splice should not return 0 when bytes_remaining > 0");
+        }
         self.bytes_written += n;
         Ok(n)
     }

@@ -6,7 +6,7 @@ pub mod io;
 pub mod pipe;
 pub mod traffic;
 
-pub use splice::SpliceCtx;
+pub use splice::{Live, SpliceCtx, Splicer};
 pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceIo};
 
 #[inline]

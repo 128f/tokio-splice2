@@ -1,80 +1,84 @@
-//! Core `splice(2)` operations against a [`SpliceCtx`].
+//! The [`Splicer`] trait abstracts the two splice directions, and [`Live`] is
+//! the production implementation that calls the real `splice(2)` syscall.
 
 use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, BorrowedFd};
 
 use rustix::pipe::{splice, SpliceFlags};
 
-use super::SpliceCtx;
-
-/// Move data from a socket (or file) into the pipe.
+/// Performs the two splice directions: source → pipe, and pipe → destination.
 ///
-/// Precondition: the pipe is empty — either initial state, or
-/// [`try_splice_to_dest`] has drained it. The pipe is therefore ready for
-/// writing, so an EAGAIN from `splice` must come from the source not being
-/// ready for reading.
-///
-/// Returns the number of bytes spliced into the pipe. `Ok(0)` means no more
-/// bytes will ever come from the source — either the target byte count has
-/// been reached, or the source hit EOF. The caller is responsible for closing
-/// the pipe write side in that case.
-pub(crate) fn try_splice_from_source<R: AsFd, W>(
-    s: &mut SpliceCtx<R, W>,
-    r: &R,
-) -> io::Result<usize> {
-    let pipe_write_side_fd = s
-        .pipe
-        .write_side_fd()
-        .expect("Caller must check is_finished() before calling");
+/// The trait carries no state — [`SpliceCtx`](super::SpliceCtx) owns the pipe,
+/// counters, and offsets, and calls into the `Splicer` to move bytes. The
+/// trait exists so tests can substitute an implementation that doesn't invoke
+/// the real `splice(2)` syscall.
+pub trait Splicer {
+    /// Move bytes from `r` into the pipe via `pipe_w`.
+    ///
+    /// Returns the number of bytes transferred. `Ok(0)` indicates the source
+    /// has no more bytes to offer (EOF, or the configured target length has
+    /// been reached).
+    fn splice_in<R: AsFd>(
+        &mut self,
+        r: &R,
+        off_in: Option<&mut u64>,
+        pipe_w: BorrowedFd<'_>,
+        max_len: usize,
+    ) -> io::Result<usize>;
 
-    let bytes_remaining = s.size_to_splice - s.bytes_read;
-    if bytes_remaining == 0 {
-        return Ok(0);
-    }
-
-    splice(
-        r.as_fd(),
-        s.offset.off_in(),
-        pipe_write_side_fd,
-        None,
-        bytes_remaining,
-        SpliceFlags::NONBLOCK,
-    )
-    .map_err(Into::into)
+    /// Move bytes from the pipe via `pipe_r` into `w`.
+    ///
+    /// Returns the number of bytes transferred. The caller guarantees the
+    /// pipe is non-empty; an `Ok(0)` return is therefore a broken invariant.
+    fn splice_out<W: AsFd>(
+        &mut self,
+        pipe_r: BorrowedFd<'_>,
+        w: &W,
+        off_out: Option<&mut u64>,
+        max_len: usize,
+    ) -> io::Result<usize>;
 }
 
-/// Move data from the pipe to a socket (or file).
-///
-/// Single non-blocking splice attempt; returns EAGAIN if the destination is
-/// not ready.
-///
-/// Returns the number of bytes spliced out of the pipe. `Ok(0)` means the
-/// pipe was already drained (`bytes_read == bytes_written`); a zero return
-/// from `splice` itself is a broken invariant and panics.
-pub(crate) fn try_splice_to_destination<R, W: AsFd>(
-    s: &mut SpliceCtx<R, W>,
-    w: &W,
-) -> io::Result<usize> {
-    let pipe_read_side_fd = s
-        .pipe
-        .read_side_fd()
-        .expect("Caller must check is_finished() before calling");
+/// Production [`Splicer`]: calls the real `splice(2)` syscall.
+#[derive(Default, Debug)]
+pub struct Live;
 
-    let bytes_remaining = s.bytes_read - s.bytes_written;
-    if bytes_remaining == 0 {
-        return Ok(0);
+impl Splicer for Live {
+    #[inline]
+    fn splice_in<R: AsFd>(
+        &mut self,
+        r: &R,
+        off_in: Option<&mut u64>,
+        pipe_w: BorrowedFd<'_>,
+        max_len: usize,
+    ) -> io::Result<usize> {
+        splice(
+            r.as_fd(),
+            off_in,
+            pipe_w,
+            None,
+            max_len,
+            SpliceFlags::NONBLOCK,
+        )
+        .map_err(Into::into)
     }
 
-    match splice(
-        pipe_read_side_fd,
-        None,
-        w.as_fd(),
-        s.offset.off_out(),
-        bytes_remaining,
-        SpliceFlags::NONBLOCK,
-    ) {
-        Ok(0) => panic!("splice should not return 0 when bytes_remaining > 0"),
-        Ok(n) => Ok(n),
-        Err(e) => Err(e.into()),
+    #[inline]
+    fn splice_out<W: AsFd>(
+        &mut self,
+        pipe_r: BorrowedFd<'_>,
+        w: &W,
+        off_out: Option<&mut u64>,
+        max_len: usize,
+    ) -> io::Result<usize> {
+        splice(
+            pipe_r,
+            None,
+            w.as_fd(),
+            off_out,
+            max_len,
+            SpliceFlags::NONBLOCK,
+        )
+        .map_err(Into::into)
     }
 }

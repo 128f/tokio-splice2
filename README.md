@@ -7,15 +7,25 @@ Async [`splice(2)`] copy primitives for Tokio on Linux.
 Three async entry points, all returning a [`TrafficResult`](src/traffic.rs)
 with bytes-in / bytes-out and the terminating error (if any):
 
-```rust
-// Stream-to-stream, one direction.
-splicer::copy(&mut reader, &mut writer).await?;
+```rust,no_run
+use tokio::fs::File;
+use tokio::net::TcpStream;
 
-// Like `tokio::io::copy_bidirectional`, but on splice(2).
-splicer::copy_bidirectional(&mut left, &mut right).await?;
+async fn example() -> std::io::Result<()> {
+    let mut a = TcpStream::connect("127.0.0.1:0").await?;
+    let mut b = TcpStream::connect("127.0.0.1:0").await?;
 
-// sendfile-style: file -> socket, with optional byte range.
-splicer::sendfile(&mut file, &mut socket, len, start, end).await?;
+    // Stream-to-stream, one direction.
+    splicer::copy(&mut a, &mut b).await?;
+
+    // Like `tokio::io::copy_bidirectional`, but on splice(2).
+    splicer::copy_bidirectional(&mut a, &mut b).await?;
+
+    // sendfile-style: file -> socket, with optional byte range.
+    let mut file = File::open("/dev/null").await?;
+    splicer::sendfile(&mut file, &mut a, 0, None, None).await?;
+    Ok(())
+}
 ```
 
 `R` / `W` must be FDs the kernel will splice — TCP, Unix sockets, and (for
