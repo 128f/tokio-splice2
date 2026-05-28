@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use splicer::traffic::TrafficResult;
-use splicer::{SpliceIo, Splicer};
+use splicer::{SpliceIo, SpliceCtx};
 
 pub(crate) const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -67,7 +67,7 @@ impl ListenerPair {
 
     pub(crate) async fn run<F, Fut, T>(
         self,
-        splicer: Splicer<TcpStream, TcpStream>,
+        splicer: SpliceCtx<TcpStream, TcpStream>,
         source: F,
     ) -> RunOutput<T>
     where

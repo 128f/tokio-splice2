@@ -23,16 +23,16 @@ the file entry points) `tokio::fs::File`. The [`AsyncReadFd`] / [`IsFile`]
 traits in [`src/io/fd.rs`](src/io/fd.rs) gatekeep this at compile time.
 
 For finer control — custom pipe size, byte caps, reusing the pipe across
-calls — drop down to [`Splicer`](src/splice/mod.rs) and
+calls — drop down to [`SpliceCtx`](src/splice/mod.rs) and
 [`SpliceIo`](src/io/mod.rs) directly.
 
 ## Layering
 
-- [`src/splice/`](src/splice/) — `Splicer<R, W>`: pure synchronous splice
+- [`src/splice/`](src/splice/) — `SpliceCtx<R, W>`: pure synchronous splice
   mechanics. Owns the pipe, offset, and byte counters. No `Poll` / `Pin` /
   `Context`. Testable without a runtime.
 - [`src/io/`](src/io/) — `SpliceIo` and `SpliceBidiIo`: the async state
-  machine wrapping `Splicer` and driving the underlying FDs through Tokio's
+  machine wrapping `SpliceCtx` and driving the underlying FDs through Tokio's
   reactor.
 - [`src/pipe.rs`](src/pipe.rs), [`src/traffic.rs`](src/traffic.rs) — pipe
   RAII and traffic accounting.

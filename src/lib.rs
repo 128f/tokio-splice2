@@ -6,13 +6,13 @@ pub mod io;
 pub mod pipe;
 pub mod traffic;
 
-pub use splice::Splicer;
+pub use splice::SpliceCtx;
 pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceIo};
 
 #[inline]
 /// Copies data from `r` to `w` using `splice(2)`.
 ///
-/// See [`Splicer::new`] and [`SpliceIo::execute`] for more details; see
+/// See [`SpliceCtx::new`] and [`SpliceIo::execute`] for more details; see
 /// the [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -23,7 +23,7 @@ where
     R: io::AsyncReadFd + IsNotFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(io::SpliceIo::from(splice::Splicer::new()?)
+    Ok(io::SpliceIo::from(splice::SpliceCtx::new()?)
         .execute(r, w)
         .await)
 }
@@ -31,7 +31,7 @@ where
 #[inline]
 /// Copies data from file `r` to `w` using `splice(2)`.
 ///
-/// See [`Splicer::with_input_file`] for more details; see the
+/// See [`SpliceCtx::with_input_file`] for more details; see the
 /// [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -49,7 +49,7 @@ where
     R: io::AsyncReadFd + IsFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
 {
-    Ok(io::SpliceIo::from(splice::Splicer::with_input_file(
+    Ok(io::SpliceIo::from(splice::SpliceCtx::with_input_file(
         f_len,
         f_offset_start,
         f_offset_end,
@@ -65,7 +65,7 @@ where
 /// data read to the opposing stream. This happens in both directions
 /// concurrently.
 ///
-/// See [`Splicer::new`] and [`SpliceBidiIo::execute`] for more details;
+/// See [`SpliceCtx::new`] and [`SpliceBidiIo::execute`] for more details;
 /// see the [crate-level documentation](crate) for known limitations.
 ///
 /// ## Errors
@@ -80,8 +80,8 @@ where
     B: io::AsyncReadFd + io::AsyncWriteFd + IsNotFile + Unpin,
 {
     Ok(io::SpliceBidiIo {
-        io_sl2sr: splice::Splicer::new()?.into(),
-        io_sr2sl: splice::Splicer::new()?.into(),
+        io_sl2sr: splice::SpliceCtx::new()?.into(),
+        io_sr2sl: splice::SpliceCtx::new()?.into(),
     }
     .execute(sl, sr)
     .await)

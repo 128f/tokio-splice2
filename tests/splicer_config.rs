@@ -1,11 +1,11 @@
-//! Tests for the `Splicer` builder API and runtime counters.
+//! Tests for the `SpliceCtx` builder API and runtime counters.
 //!
 //! Covers `with_pipe_size`, `with_target_len`, and the `bytes_read` /
 //! `bytes_written` accessors.
 
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
-use splicer::Splicer;
+use splicer::SpliceCtx;
 
 mod util;
 use util::ListenerPair;
@@ -13,8 +13,8 @@ use util::ListenerPair;
 timed_test!(test_splicer_with_pipe_size, {
     // 8192 = two 4 KiB pages, so the kernel won't round it up on any
     // supported arch — we can assert the returned size exactly.
-    let splicer: Splicer<TcpStream, TcpStream> =
-        Splicer::new().unwrap().with_pipe_size(8192).unwrap();
+    let splicer: SpliceCtx<TcpStream, TcpStream> =
+        SpliceCtx::new().unwrap().with_pipe_size(8192).unwrap();
     assert_eq!(splicer.pipe_size().get(), 8192);
 
     // 64 KiB is 8× the pipe capacity, so the splice loop has to make
@@ -40,7 +40,7 @@ timed_test!(test_splicer_with_pipe_size, {
 });
 
 timed_test!(test_splicer_with_pipe_size_below_page_size, {
-    let splicer: Splicer<TcpStream, TcpStream> = Splicer::new().unwrap().with_pipe_size(1).unwrap();
+    let splicer: SpliceCtx<TcpStream, TcpStream> = SpliceCtx::new().unwrap().with_pipe_size(1).unwrap();
     let actual = splicer.pipe_size().get();
 
     assert!(actual >= 4096, "expected page-rounded size, got {actual}");
@@ -57,7 +57,7 @@ timed_test!(test_splicer_with_pipe_size_above_max, {
     // assertion meaningful regardless of privilege, request a size so large
     // the kernel cannot satisfy it at all — `usize::MAX` is guaranteed to
     // overflow `F_SETPIPE_SZ`'s `int` argument or exhaust memory.
-    let result = Splicer::<TcpStream, TcpStream>::new()
+    let result = SpliceCtx::<TcpStream, TcpStream>::new()
         .unwrap()
         .with_pipe_size(usize::MAX);
 
@@ -74,7 +74,7 @@ timed_test!(test_splicer_with_target_len_short_circuit, {
     // works, the splicer stops at TARGET regardless of how much is available.
     const PEER_BOUND: usize = 1024 * 1024;
 
-    let splicer: Splicer<TcpStream, TcpStream> = Splicer::new().unwrap().with_target_len(TARGET);
+    let splicer: SpliceCtx<TcpStream, TcpStream> = SpliceCtx::new().unwrap().with_target_len(TARGET);
 
     let out = ListenerPair::new()
         .await
@@ -113,7 +113,7 @@ timed_test!(test_splicer_with_target_len_source_eof_first, {
     const TARGET: usize = 16 * 1024;
     const SOURCE_BYTES: usize = 4 * 1024;
 
-    let splicer: Splicer<TcpStream, TcpStream> = Splicer::new().unwrap().with_target_len(TARGET);
+    let splicer: SpliceCtx<TcpStream, TcpStream> = SpliceCtx::new().unwrap().with_target_len(TARGET);
 
     let out = ListenerPair::new()
         .await

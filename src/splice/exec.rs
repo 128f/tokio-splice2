@@ -1,11 +1,11 @@
-//! Core `splice(2)` operations against a [`Splicer`].
+//! Core `splice(2)` operations against a [`SpliceCtx`].
 
 use std::io;
 use std::os::fd::AsFd;
 
 use rustix::pipe::{splice, SpliceFlags};
 
-use super::Splicer;
+use super::SpliceCtx;
 
 /// Move data from a socket (or file) into the pipe.
 ///
@@ -19,7 +19,7 @@ use super::Splicer;
 /// been reached, or the source hit EOF. The caller is responsible for closing
 /// the pipe write side in that case.
 pub(crate) fn try_splice_from_source<R: AsFd, W>(
-    s: &mut Splicer<R, W>,
+    s: &mut SpliceCtx<R, W>,
     r: &R,
 ) -> io::Result<usize> {
     let pipe_write_side_fd = s
@@ -52,7 +52,7 @@ pub(crate) fn try_splice_from_source<R: AsFd, W>(
 /// pipe was already drained (`bytes_read == bytes_written`); a zero return
 /// from `splice` itself is a broken invariant and panics.
 pub(crate) fn try_splice_to_destination<R, W: AsFd>(
-    s: &mut Splicer<R, W>,
+    s: &mut SpliceCtx<R, W>,
     w: &W,
 ) -> io::Result<usize> {
     let pipe_read_side_fd = s

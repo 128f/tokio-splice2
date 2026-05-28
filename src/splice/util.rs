@@ -1,4 +1,4 @@
-//! Helpers for `Splicer` construction.
+//! Helpers for `SpliceCtx` construction.
 
 use std::io;
 

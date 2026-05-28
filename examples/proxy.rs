@@ -101,8 +101,8 @@ async fn forwarding(mut stream1: TcpStream, upstream_addr: String) -> io::Result
 
     let instant = std::time::Instant::now();
 
-    let io_sl2sr = splicer::splice::Splicer::new()?.into();
-    let io_sr2sl = splicer::splice::Splicer::new()?.into();
+    let io_sl2sr = splicer::splice::SpliceCtx::new()?.into();
+    let io_sr2sl = splicer::splice::SpliceCtx::new()?.into();
 
     let traffic = splicer::io::SpliceBidiIo { io_sl2sr, io_sr2sl }
         .execute(&mut stream1, &mut stream2)

@@ -130,7 +130,7 @@ async fn splice_to_file(
         f_offset_end = None;
     }
 
-    splicer::SpliceIo::from(splicer::Splicer::with_output_file(
+    splicer::SpliceIo::from(splicer::SpliceCtx::with_output_file(
         w_len,
         f_offset_start,
         f_offset_end,

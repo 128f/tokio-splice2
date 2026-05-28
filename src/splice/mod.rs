@@ -15,7 +15,7 @@ use crate::traffic::TrafficResult;
 
 /// State for a `splice(2)` operation: the pipe used as the kernel-side buffer,
 /// the byte counters, and any file offset.
-pub struct Splicer<R, W> {
+pub struct SpliceCtx<R, W> {
     /// The `off_in` when splicing from `R` to the pipe, or the `off_out` when
     /// splicing from the pipe to `W`.
     offset: Offset,
@@ -36,9 +36,9 @@ pub struct Splicer<R, W> {
     w: PhantomData<W>,
 }
 
-impl<R, W> fmt::Debug for Splicer<R, W> {
+impl<R, W> fmt::Debug for SpliceCtx<R, W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Splicer")
+        f.debug_struct("SpliceCtx")
             .field("offset", &self.offset)
             .field("size_to_splice", &self.size_to_splice)
             .field("pipe", &self.pipe)
@@ -48,7 +48,7 @@ impl<R, W> fmt::Debug for Splicer<R, W> {
     }
 }
 
-impl<R, W> Splicer<R, W> {
+impl<R, W> SpliceCtx<R, W> {
     #[inline]
     fn new_inner() -> io::Result<Self> {
         Ok(Self {
@@ -63,7 +63,7 @@ impl<R, W> Splicer<R, W> {
     }
 
     #[inline]
-    /// Prepare a new `Splicer` instance.
+    /// Prepare a new `SpliceCtx` instance.
     ///
     /// Can be used only when `R` and `W` are not files.
     ///
@@ -96,7 +96,7 @@ impl<R, W> Splicer<R, W> {
     }
 
     #[inline]
-    /// Prepare a new `Splicer` instance.
+    /// Prepare a new `SpliceCtx` instance.
     ///
     /// Can be used only when `R` is a file.
     ///
@@ -120,7 +120,7 @@ impl<R, W> Splicer<R, W> {
         R: IsFile,
         W: IsNotFile,
     {
-        Ok(Splicer {
+        Ok(SpliceCtx {
             offset: Offset::In(f_offset_start.unwrap_or(0)),
             size_to_splice: Offset::calc_size_to_splice(f_len, f_offset_start, f_offset_end)?
                 .try_into()
@@ -130,7 +130,7 @@ impl<R, W> Splicer<R, W> {
     }
 
     #[inline]
-    /// Prepare a new `Splicer` instance.
+    /// Prepare a new `SpliceCtx` instance.
     ///
     /// Can be used only when `W` is a file.
     ///
@@ -154,7 +154,7 @@ impl<R, W> Splicer<R, W> {
         R: IsNotFile,
         W: IsFile,
     {
-        Ok(Splicer {
+        Ok(SpliceCtx {
             offset: Offset::Out(f_offset_start.unwrap_or(0)),
             size_to_splice: Offset::calc_size_to_splice(f_len, f_offset_start, f_offset_end)?
                 .try_into()
@@ -183,7 +183,7 @@ impl<R, W> Splicer<R, W> {
     }
 }
 
-impl<R, W> Splicer<R, W> {
+impl<R, W> SpliceCtx<R, W> {
     #[must_use]
     #[inline]
     /// Returns bytes that have been read from `R`.
@@ -234,7 +234,7 @@ impl<R, W> Splicer<R, W> {
     }
 }
 
-impl<R: AsFd, W> Splicer<R, W> {
+impl<R: AsFd, W> SpliceCtx<R, W> {
     #[inline]
     pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<usize> {
         let n = exec::try_splice_from_source(self, r)?;
@@ -247,7 +247,7 @@ impl<R: AsFd, W> Splicer<R, W> {
     }
 }
 
-impl<R, W: AsFd> Splicer<R, W> {
+impl<R, W: AsFd> SpliceCtx<R, W> {
     #[inline]
     pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<usize> {
         let n = exec::try_splice_to_destination(self, w)?;

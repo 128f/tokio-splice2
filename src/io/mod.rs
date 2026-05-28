@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::{io, ops};
 
-use crate::splice::Splicer;
+use crate::splice::SpliceCtx;
 use crate::traffic::TrafficResult;
 
 #[derive(Debug)]
@@ -19,20 +19,20 @@ use crate::traffic::TrafficResult;
 ///
 /// Notice: see the [module-level documentation](crate) for known limitations.
 pub struct SpliceIo<R, W> {
-    splicer: Splicer<R, W>,
+    splicer: SpliceCtx<R, W>,
     state: TransferState,
 }
 
 impl<R, W> ops::Deref for SpliceIo<R, W> {
-    type Target = Splicer<R, W>;
+    type Target = SpliceCtx<R, W>;
 
     fn deref(&self) -> &Self::Target {
         &self.splicer
     }
 }
 
-impl<R, W> From<Splicer<R, W>> for SpliceIo<R, W> {
-    fn from(splicer: Splicer<R, W>) -> Self {
+impl<R, W> From<SpliceCtx<R, W>> for SpliceIo<R, W> {
+    fn from(splicer: SpliceCtx<R, W>) -> Self {
         SpliceIo {
             splicer,
             state: TransferState::Fill,
