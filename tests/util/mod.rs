@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use splicer::traffic::TrafficResult;
+use splicer::transfer_report::TransferReport;
 use splicer::{SpliceIo, SpliceCtx};
 
 pub(crate) const TEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -46,7 +46,7 @@ pub(crate) struct ListenerPair {
 }
 
 pub(crate) struct RunOutput<T> {
-    pub(crate) splice: TrafficResult,
+    pub(crate) splice: TransferReport,
     pub(crate) received: Vec<u8>,
     pub(crate) source: T,
 }

@@ -15,7 +15,7 @@ use std::{fmt, io};
 use self::util::Offset;
 use crate::io::{IsFile, IsNotFile};
 use crate::pipe::Pipe;
-use crate::traffic::TrafficResult;
+use crate::transfer_report::TransferReport;
 
 /// State for a `splice(2)` operation: the pipe used as the kernel-side buffer,
 /// the byte counters, and any file offset.
@@ -261,8 +261,8 @@ impl<R, W, S> SpliceCtx<R, W, S> {
     #[must_use]
     #[inline]
     /// Returns the traffic result (client TX one).
-    pub const fn traffic_client_tx(&self, error: Option<io::Error>) -> TrafficResult {
-        TrafficResult {
+    pub const fn traffic_client_tx(&self, error: Option<io::Error>) -> TransferReport {
+        TransferReport {
             tx: self.bytes_written,
             rx: 0,
             error,
@@ -272,8 +272,8 @@ impl<R, W, S> SpliceCtx<R, W, S> {
     #[must_use]
     #[inline]
     /// Returns the traffic result (client RX one).
-    pub const fn traffic_client_rx(&self, error: Option<io::Error>) -> TrafficResult {
-        TrafficResult {
+    pub const fn traffic_client_rx(&self, error: Option<io::Error>) -> TransferReport {
+        TransferReport {
             tx: 0,
             rx: self.bytes_read,
             error,

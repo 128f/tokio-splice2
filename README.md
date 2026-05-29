@@ -4,7 +4,7 @@ Async [`splice(2)`] copy primitives for Tokio on Linux.
 
 ## What it does
 
-Three async entry points, all returning a [`TrafficResult`](src/traffic.rs)
+Three async entry points, all returning a [`TransferReport`](src/transfer_report.rs)
 with bytes-in / bytes-out and the terminating error (if any):
 
 ```rust,no_run

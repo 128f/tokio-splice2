@@ -1,13 +1,13 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(debug_assertions, allow(clippy::unreachable))]
 
-pub mod splice;
 pub mod io;
 pub mod pipe;
-pub mod traffic;
+pub mod splice;
+pub mod transfer_report;
 
-pub use splice::{Live, SpliceCtx, Splicer};
 pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceIo};
+pub use splice::{Live, SpliceCtx, Splicer};
 
 #[inline]
 /// Copies data from `r` to `w` using `splice(2)`.
@@ -18,7 +18,7 @@ pub use io::{AsyncReadFd, AsyncWriteFd, IsFile, IsNotFile, SpliceBidiIo, SpliceI
 /// ## Errors
 ///
 /// * Create pipe failed.
-pub async fn copy<R, W>(r: &mut R, w: &mut W) -> std::io::Result<traffic::TrafficResult>
+pub async fn copy<R, W>(r: &mut R, w: &mut W) -> std::io::Result<transfer_report::TransferReport>
 where
     R: io::AsyncReadFd + IsNotFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
@@ -44,7 +44,7 @@ pub async fn sendfile<R, W>(
     f_len: u64,
     f_offset_start: Option<u64>,
     f_offset_end: Option<u64>,
-) -> std::io::Result<traffic::TrafficResult>
+) -> std::io::Result<transfer_report::TransferReport>
 where
     R: io::AsyncReadFd + IsFile + Unpin,
     W: io::AsyncWriteFd + IsNotFile + Unpin,
@@ -71,10 +71,7 @@ where
 /// ## Errors
 ///
 /// * Create pipe failed.
-pub async fn copy_bidirectional<A, B>(
-    sl: &mut A,
-    sr: &mut B,
-) -> std::io::Result<traffic::TrafficResult>
+pub async fn copy_bidirectional<A, B>(sl: &mut A, sr: &mut B) -> std::io::Result<transfer_report::TransferReport>
 where
     A: io::AsyncReadFd + io::AsyncWriteFd + IsNotFile + Unpin,
     B: io::AsyncReadFd + io::AsyncWriteFd + IsNotFile + Unpin,

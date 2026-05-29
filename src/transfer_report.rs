@@ -1,11 +1,11 @@
-//! Traffic transmitted result.
+//! Bytes transmitted by a `splice(2)` operation.
 
 use std::io;
 
 #[derive(Debug)]
-/// Traffic transmitted throughout the `splice(2)` operation, regardless of any
+/// Bytes transmitted throughout the `splice(2)` operation, regardless of any
 /// errors.
-pub struct TrafficResult {
+pub struct TransferReport {
     /// The number of bytes that have been transferred from a to b
     pub tx: usize,
 
@@ -16,10 +16,10 @@ pub struct TrafficResult {
     pub error: Option<io::Error>,
 }
 
-impl TrafficResult {
+impl TransferReport {
     #[must_use]
     #[inline]
-    /// Merges two `TrafficResult` instances.
+    /// Merges two `TransferReport` instances.
     pub fn merge(self, other: Self) -> Self {
         Self {
             tx: self.tx + other.tx,
@@ -36,16 +36,16 @@ impl TrafficResult {
     }
 
     #[inline]
-    /// Turns the `TrafficResult` into an `io::Result<usize>`.
+    /// Turns the `TransferReport` into an `io::Result<TransferReport>`.
     ///
     /// ## Errors
     ///
-    /// Extracts the error from the `TrafficResult` if it exists.
+    /// Extracts the error from the `TransferReport` if it exists.
     pub fn into_result(self) -> io::Result<Self> {
         if let Some(err) = self.error {
             Err(err)
         } else {
-            Ok(TrafficResult {
+            Ok(Self {
                 error: None,
                 ..self
             })

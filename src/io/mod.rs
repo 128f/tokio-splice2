@@ -12,7 +12,7 @@ use std::task::{ready, Context, Poll};
 use std::{fmt, io, ops};
 
 use crate::splice::{Live, SpliceCtx, SpliceOutcome, Splicer};
-use crate::traffic::TrafficResult;
+use crate::transfer_report::TransferReport;
 
 /// Zero-copy unidirectional I/O with `splice(2)`.
 ///
@@ -95,7 +95,7 @@ where
     ///
     /// This is a convenient `async fn` version of
     /// [`SpliceIo::poll_execute`].
-    pub async fn execute(mut self, r: &mut R, w: &mut W) -> TrafficResult {
+    pub async fn execute(mut self, r: &mut R, w: &mut W) -> TransferReport {
         let error = poll_fn(|cx| self.poll_execute(cx, r, w)).await.err();
 
         self.splicer.traffic_client_tx(error)
@@ -119,7 +119,7 @@ where
     /// its behavior. When using this API:
     ///
     /// - The [`SpliceIo`] instance MUST NOT be reused after completion.
-    /// - The caller MAY manually extracts [`TrafficResult`] from the context.
+    /// - The caller MAY manually extracts [`TransferReport`] from the context.
     pub fn poll_execute(
         &mut self,
         cx: &mut Context<'_>,
@@ -222,7 +222,7 @@ where
     ///
     /// This is a convenient `async fn` version of
     /// [`SpliceBidiIo::poll_execute`].
-    pub async fn execute(mut self, sl: &mut SL, sr: &mut SR) -> TrafficResult
+    pub async fn execute(mut self, sl: &mut SL, sr: &mut SR) -> TransferReport
     where
         SL: Unpin,
         SR: Unpin,
@@ -258,7 +258,7 @@ where
     /// its behavior. When using this API:
     ///
     /// - The [`SpliceBidiIo`] instance MUST NOT be reused after completion.
-    /// - The caller MAY manually extracts [`TrafficResult`] from the context.
+    /// - The caller MAY manually extracts [`TransferReport`] from the context.
     pub fn poll_execute(
         &mut self,
         cx: &mut Context<'_>,
