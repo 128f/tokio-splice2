@@ -98,7 +98,11 @@ where
     pub async fn execute(mut self, r: &mut R, w: &mut W) -> TransferReport {
         let error = poll_fn(|cx| self.poll_execute(cx, r, w)).await.err();
 
-        self.splicer.traffic_client_tx(error)
+        TransferReport {
+            tx: self.splicer.bytes_written(),
+            rx: 0,
+            error,
+        }
     }
 
     #[cfg_attr(
@@ -229,10 +233,11 @@ where
     {
         let error = poll_fn(|cx| self.poll_execute(cx, sl, sr)).await.err();
 
-        self.io_sl2sr
-            .splicer
-            .traffic_client_tx(error)
-            .merge(self.io_sr2sl.splicer.traffic_client_rx(None))
+        TransferReport {
+            tx: self.io_sl2sr.splicer.bytes_written(),
+            rx: self.io_sr2sl.splicer.bytes_written(),
+            error,
+        }
     }
 
     #[cfg_attr(

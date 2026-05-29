@@ -108,7 +108,7 @@ async fn forwarding(mut stream1: TcpStream, upstream_addr: String) -> io::Result
         .execute(&mut stream1, &mut stream2)
         .await;
 
-    let total = traffic.sum();
+    let total = traffic.tx + traffic.rx;
     let cost = instant.elapsed();
     println!(
         "Forwarded traffic: total: {total} B, time: {:.2} s, avg: {:.4} B/s, error: {:?}",
