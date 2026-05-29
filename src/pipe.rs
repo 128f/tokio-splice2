@@ -42,13 +42,13 @@ pub const DEFAULT_PIPE_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked
 #[derive(Debug)]
 /// Linux Pipe.
 pub struct Pipe {
-    /// File descriptor for reading from the pipe. `None` once the read side is
-    /// done.
-    read_side_fd: Option<OwnedFd>,
+    /// File descriptor bytes leave the pipe through (read end). `None` once
+    /// the drain side is done.
+    drain_fd: Option<OwnedFd>,
 
-    /// File descriptor for writing to the pipe. `None` once the write side is
-    /// done.
-    write_side_fd: Option<OwnedFd>,
+    /// File descriptor bytes enter the pipe through (write end). `None` once
+    /// the fill side is done.
+    fill_fd: Option<OwnedFd>,
 
     /// Pipe size in bytes.
     size: NonZeroUsize,
@@ -66,15 +66,15 @@ impl Pipe {
     pub fn new() -> io::Result<Self> {
         pipe_with(PipeFlags::NONBLOCK | PipeFlags::CLOEXEC)
             .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
-            .and_then(|(read_fd, write_fd)| {
+            .and_then(|(drain_fd, fill_fd)| {
                 // Splice will loop writing MAXIMUM_PIPE_SIZE bytes from the source to the pipe,
                 // and then write those bytes from the pipe to the destination.
                 // Set the pipe buffer size to MAXIMUM_PIPE_SIZE to optimize that.
                 // Ignore errors here, as a smaller buffer size will work,
                 // although it will require more system calls.
-                let size = match fcntl_setpipe_size(&read_fd, MAXIMUM_PIPE_SIZE.get()) {
+                let size = match fcntl_setpipe_size(&drain_fd, MAXIMUM_PIPE_SIZE.get()) {
                     Ok(size) => NonZeroUsize::new(size),
-                    Err(_) => NonZeroUsize::new(fcntl_getpipe_size(&read_fd)?),
+                    Err(_) => NonZeroUsize::new(fcntl_getpipe_size(&drain_fd)?),
                 }
                 .ok_or_else(|| {
                     io::Error::new(
@@ -84,8 +84,8 @@ impl Pipe {
                 })?;
 
                 Ok(Self {
-                    read_side_fd: Some(read_fd),
-                    write_side_fd: Some(write_fd),
+                    drain_fd: Some(drain_fd),
+                    fill_fd: Some(fill_fd),
                     size,
                 })
             })
@@ -99,40 +99,50 @@ impl Pipe {
     ///
     /// [`fcntl(2)`]: https://man7.org/linux/man-pages/man2/fcntl.2.html.
     pub fn with_pipe_size(mut self, pipe_size: usize) -> io::Result<Self> {
-        let Some(write_side_fd) = self.write_side_fd.as_ref() else {
+        let Some(fill_fd) = self.fill_fd.as_ref() else {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "write side file descriptor is not available",
+                "fill-side file descriptor is not available",
             ));
         };
 
-        let new_size = fcntl_setpipe_size(write_side_fd, pipe_size)
+        let new_size = fcntl_setpipe_size(fill_fd, pipe_size)
             .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
-        self.size = NonZeroUsize::new(new_size).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "fcntl returned zero pipe size")
-        })?;
+        self.size = NonZeroUsize::new(new_size)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "fcntl returned zero pipe size"))?;
         Ok(self)
     }
 
     #[inline]
-    pub(crate) const fn write_side_fd(&self) -> Option<&OwnedFd> {
-        self.write_side_fd.as_ref()
+    pub(crate) fn set_drain_done(&mut self) {
+        self.drain_fd = None;
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) const fn is_drain_done(&self) -> bool {
+        self.drain_fd.is_none()
+    }
+
+    #[inline]
+    pub(crate) const fn fill_fd(&self) -> Option<&OwnedFd> {
+        self.fill_fd.as_ref()
     }
 
     #[must_use]
     #[inline]
-    pub(crate) const fn is_write_side_done(&self) -> bool {
-        self.write_side_fd.is_none()
+    pub(crate) const fn is_fill_done(&self) -> bool {
+        self.fill_fd.is_none()
     }
 
     #[inline]
-    pub(crate) fn set_write_side_done(&mut self) {
-        self.write_side_fd = None;
+    pub(crate) fn set_fill_done(&mut self) {
+        self.fill_fd = None;
     }
 
     #[inline]
-    pub(crate) const fn read_side_fd(&self) -> Option<&OwnedFd> {
-        self.read_side_fd.as_ref()
+    pub(crate) const fn drain_fd(&self) -> Option<&OwnedFd> {
+        self.drain_fd.as_ref()
     }
 
     #[must_use]
@@ -142,4 +152,3 @@ impl Pipe {
         self.size
     }
 }
-

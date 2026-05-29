@@ -139,7 +139,6 @@ async fn splice_to_file(
     .await;
 
     let mut buf = vec![0; w_len as usize];
-    // println!("w_len: {w_len}");
 
     // Do no reuse the file handle, since its offset is not at the start of file.
     async_fs::OpenOptions::new()

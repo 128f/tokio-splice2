@@ -2,10 +2,10 @@
 
 use std::io::Result;
 
+use splicer::copy_bidirectional;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
-use splicer::copy_bidirectional;
 
 async fn echo_server(addr: &str) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;

@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::{fmt, io, ops};
 
-use crate::splice::{Live, SpliceCtx, Splicer};
+use crate::splice::{Live, SpliceCtx, SpliceResult, Splicer};
 use crate::traffic::TrafficResult;
 
 /// Zero-copy unidirectional I/O with `splice(2)`.
@@ -48,7 +48,6 @@ impl<R, W, S> SpliceIo<R, W, S> {
         match self.state {
             TransferState::Fill => "Fill",
             TransferState::Drain => "Drain",
-            TransferState::Flushing => "Flushing",
             TransferState::Finished { .. } => "Finished",
         }
     }
@@ -70,9 +69,6 @@ enum TransferState {
 
     /// Moving data from the pipe to `W`.
     Drain,
-
-    /// Flushing buffered data of `W`.
-    Flushing,
 
     /// We have terminated and will attempt to gracefully shutdown,
     /// if there was an error it will be returned
@@ -151,11 +147,21 @@ where
                     // check if we're ready to read
                     ready!(r.poll_read_ready(cx))?;
                     // try to read, if EAGAIN then loop back and wait again
-                    // side-effect: try_io_read will clear the readiness state if it returns EAGAIN, so we won't busy loop
+                    // side-effect: try_io_read will clear the readiness state if it returns EAGAIN,
+                    // so we won't busy loop
                     match r.try_io_read(|| self.splicer.try_splice_from_source(&*r)) {
-                        Ok(_) => TransferState::Drain,
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => TransferState::Fill,
+                        Ok(SpliceResult::Closed) => TransferState::Drain,
+                        Ok(SpliceResult::BytesWritten(_)) => TransferState::Fill,
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            if self.pipe_has_data() {
+                                TransferState::Drain
+                            } else {
+                                TransferState::Fill
+                            }
+                        }
+                        // an unexpected error happened
                         Err(e) => TransferState::faulted(e),
+                        _ => unreachable!(),
                     }
                 }
                 TransferState::Drain => {
@@ -164,17 +170,21 @@ where
                     // try to write, if EAGAIN then loop back and wait again
                     // side-effect: try_io_write will clear the readiness state if it returns EAGAIN, so we won't busy loop
                     match w.try_io_write(|| self.splicer.try_splice_to_dest(&*w)) {
-                        Ok(_) if self.splicer.is_finished() => TransferState::finished(),
-                        Ok(_) => TransferState::Flushing,
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => TransferState::Drain,
+                        Ok(SpliceResult::Closed) => TransferState::finished(),
+                        Ok(SpliceResult::NoProgress) => TransferState::Fill,
+                        Ok(SpliceResult::BytesWritten(_)) => TransferState::Drain,
+                        // EAGAIN: stay in drain if the pipe has data, else go refill
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            if self.pipe_has_data() {
+                                TransferState::Drain
+                            } else {
+                                TransferState::Fill
+                            }
+                        }
+                        // an unexpected error happened
                         Err(e) => TransferState::faulted(e),
                     }
                 }
-                TransferState::Flushing => match Pin::new(&mut *w).poll_flush(cx) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ok(_)) => TransferState::Fill,
-                    Poll::Ready(Err(e)) => TransferState::faulted(e),
-                },
                 // we guard and return above this match
                 TransferState::Finished { .. } => unreachable!(),
             };
@@ -285,26 +295,24 @@ mod tests {
     /// give.
     #[test]
     fn partial_write_parks_on_writer() {
-        // 8k bytes go into the pipe, 3k bytes go out ->
-        // 5k bytes are sitting in the pipe, waiting to be drained
+        // push 8k bytes into the pipe,
+        // then pull 3k bytes out, leaving 5k in the pipe
         let splicer = MockSplicer::new()
             .script_in([Ok(8000)])
             .script_out([Ok(3000)]);
 
-        // cause the reader to report it's ready,
-        // then call the splicer, consuming the first 8k bytes
+        // allow the 8k read,
+        // then report EAGAIN to move to Drain
         let mut reader = MockFd::new()
             .unwrap()
-            .script_read_ready([Poll::Ready(Ok(()))])
-            .script_try_io_read([TryIo::CallInner]);
+            .script_read_ready([Poll::Ready(Ok(())), Poll::Ready(Ok(()))])
+            .script_try_io_read([TryIo::CallInner, TryIo::WouldBlock]);
 
-        // cause the reader to report it's ready,
-        // then call the splicer, writing the 3k bytes
-        // the pipe should now contain the 5k bytes
+        // allow the 3k write, then report EAGAIN
         let mut writer = MockFd::new()
             .unwrap()
-            .script_write_ready([Poll::Ready(Ok(()))])
-            .script_try_io_write([TryIo::CallInner]);
+            .script_write_ready([Poll::Ready(Ok(())), Poll::Ready(Ok(()))])
+            .script_try_io_write([TryIo::CallInner, TryIo::WouldBlock]);
 
         // run a SpliceIo state machine with the above scripted events
         let ctx: SpliceCtx<MockFd, MockFd, MockSplicer> =
@@ -313,15 +321,15 @@ mod tests {
 
         // poll with the dummy waker
         // state machine should begin spinning
-        // and the task will end up parked on the writer,
-        // since the pipe is not empty
         let mut cx = noop_cx();
         let poll = io.poll_execute(&mut cx, &mut reader, &mut writer);
 
+        // We should be parked on the writer,
+        // since the pipe is not empty
         assert!(matches!(poll, Poll::Pending));
+        assert_eq!(io.state_name(), "Drain");
         assert_eq!(io.bytes_read(), 8000);
         assert_eq!(io.bytes_written(), 3000);
-        assert_eq!(io.state_name(), "Drain");
     }
 
     /// Clean drain in one poll: full splice in, full splice out, EOF.

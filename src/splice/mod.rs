@@ -225,6 +225,20 @@ impl<R, W, S> SpliceCtx<R, W, S> {
         self.bytes_written
     }
 
+    /// Returns whether the internal pipe currently holds bytes that have not
+    /// yet been written to `W`.
+    #[inline]
+    pub const fn pipe_has_data(&self) -> bool {
+        self.bytes_read > self.bytes_written
+    }
+
+    /// Returns whether the internal pipe is full and cannot accept more bytes
+    /// from `R` until some are drained to `W`.
+    #[inline]
+    pub const fn pipe_is_full(&self) -> bool {
+        self.bytes_read - self.bytes_written >= self.pipe.size().get()
+    }
+
     #[must_use]
     #[inline]
     /// Returns the pipe size in bytes.
@@ -233,9 +247,15 @@ impl<R, W, S> SpliceCtx<R, W, S> {
     }
 
     #[inline]
+    pub(crate) fn is_source_done(&self) -> bool {
+        self.pipe.is_fill_done()
+    }
+
+    #[inline]
+    #[allow(dead_code)]
     /// Returns if both sides of the pipe are done.
     pub(crate) const fn is_finished(&self) -> bool {
-        self.pipe.is_write_side_done() && self.bytes_read == self.bytes_written
+        self.pipe.is_fill_done() && self.bytes_read == self.bytes_written
     }
 
     #[must_use]
@@ -261,50 +281,70 @@ impl<R, W, S> SpliceCtx<R, W, S> {
     }
 }
 
+/// The outcome of a single splice attempt between a socket and the internal pipe.
+#[derive(Debug)]
+pub enum SpliceResult {
+    /// The socket is exhausted and will close
+    Closed,
+    /// We didn't actually move any bytes
+    NoProgress,
+    /// We moved some bytes
+    BytesWritten(usize),
+}
+
 impl<R: AsFd, W, S: Splicer> SpliceCtx<R, W, S> {
     #[inline]
-    pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<usize> {
+    pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<SpliceResult> {
         let bytes_remaining = self.size_to_splice - self.bytes_read;
         if bytes_remaining == 0 {
-            self.pipe.set_write_side_done();
-            return Ok(0);
+            // we have reached the target; source is done filling the pipe
+            self.pipe.set_fill_done();
+            return Ok(SpliceResult::Closed);
         }
         let pipe_w = self
             .pipe
-            .write_side_fd()
+            .fill_fd()
             .expect("Caller must check is_finished() before calling")
             .as_fd();
         let n = self
             .splicer
             .splice_in(r, self.offset.off_in(), pipe_w, bytes_remaining)?;
-        if n == 0 {
-            self.pipe.set_write_side_done();
-        } else {
+
+        if n > 0 {
             self.bytes_read += n;
+            return Ok(SpliceResult::BytesWritten(n));
         }
-        Ok(n)
+        // 0 means source EOF
+        self.pipe.set_fill_done();
+        return Ok(SpliceResult::Closed);
     }
 }
 
 impl<R, W: AsFd, S: Splicer> SpliceCtx<R, W, S> {
     #[inline]
-    pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<usize> {
+    pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<SpliceResult> {
         let bytes_remaining = self.bytes_read - self.bytes_written;
         if bytes_remaining == 0 {
-            return Ok(0);
+            if self.is_source_done() {
+                // Source EOF'd and we've drained the pipe, so we're done.
+                self.pipe.set_drain_done();
+                return Ok(SpliceResult::Closed);
+            }
+            // signal that we made no progress
+            return Ok(SpliceResult::NoProgress);
         }
         let pipe_r = self
             .pipe
-            .read_side_fd()
+            .drain_fd()
             .expect("Caller must check is_finished() before calling")
             .as_fd();
         let n = self
             .splicer
             .splice_out(pipe_r, w, self.offset.off_out(), bytes_remaining)?;
-        if n == 0 {
-            panic!("splice should not return 0 when bytes_remaining > 0");
+        if n > 0 {
+            self.bytes_written += n;
+            return Ok(SpliceResult::BytesWritten(n));
         }
-        self.bytes_written += n;
-        Ok(n)
+        return Ok(SpliceResult::NoProgress);
     }
 }
