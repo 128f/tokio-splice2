@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::{fmt, io, ops};
 
-use crate::splice::{Live, SpliceCtx, SpliceResult, Splicer};
+use crate::splice::{Live, SpliceCtx, SpliceOutcome, Splicer};
 use crate::traffic::TrafficResult;
 
 /// Zero-copy unidirectional I/O with `splice(2)`.
@@ -150,8 +150,8 @@ where
                     // side-effect: try_io_read will clear the readiness state if it returns EAGAIN,
                     // so we won't busy loop
                     match r.try_io_read(|| self.splicer.try_splice_from_source(&*r)) {
-                        Ok(SpliceResult::Closed) => TransferState::Drain,
-                        Ok(SpliceResult::BytesWritten(_)) => TransferState::Fill,
+                        Ok(SpliceOutcome::Closed) => TransferState::Drain,
+                        Ok(SpliceOutcome::BytesWritten(_)) => TransferState::Fill,
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             if self.pipe_has_data() {
                                 TransferState::Drain
@@ -170,9 +170,9 @@ where
                     // try to write, if EAGAIN then loop back and wait again
                     // side-effect: try_io_write will clear the readiness state if it returns EAGAIN, so we won't busy loop
                     match w.try_io_write(|| self.splicer.try_splice_to_dest(&*w)) {
-                        Ok(SpliceResult::Closed) => TransferState::finished(),
-                        Ok(SpliceResult::NoProgress) => TransferState::Fill,
-                        Ok(SpliceResult::BytesWritten(_)) => TransferState::Drain,
+                        Ok(SpliceOutcome::Closed) => TransferState::finished(),
+                        Ok(SpliceOutcome::NoProgress) => TransferState::Fill,
+                        Ok(SpliceOutcome::BytesWritten(_)) => TransferState::Drain,
                         // EAGAIN: stay in drain if the pipe has data, else go refill
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             if self.pipe_has_data() {

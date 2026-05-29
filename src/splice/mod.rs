@@ -283,7 +283,7 @@ impl<R, W, S> SpliceCtx<R, W, S> {
 
 /// The outcome of a single splice attempt between a socket and the internal pipe.
 #[derive(Debug)]
-pub enum SpliceResult {
+pub enum SpliceOutcome {
     /// The socket is exhausted and will close
     Closed,
     /// We didn't actually move any bytes
@@ -294,12 +294,12 @@ pub enum SpliceResult {
 
 impl<R: AsFd, W, S: Splicer> SpliceCtx<R, W, S> {
     #[inline]
-    pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<SpliceResult> {
+    pub(crate) fn try_splice_from_source(&mut self, r: &R) -> io::Result<SpliceOutcome> {
         let bytes_remaining = self.size_to_splice - self.bytes_read;
         if bytes_remaining == 0 {
             // we have reached the target; source is done filling the pipe
             self.pipe.set_fill_done();
-            return Ok(SpliceResult::Closed);
+            return Ok(SpliceOutcome::Closed);
         }
         let pipe_w = self
             .pipe
@@ -312,26 +312,26 @@ impl<R: AsFd, W, S: Splicer> SpliceCtx<R, W, S> {
 
         if n > 0 {
             self.bytes_read += n;
-            return Ok(SpliceResult::BytesWritten(n));
+            return Ok(SpliceOutcome::BytesWritten(n));
         }
         // 0 means source EOF
         self.pipe.set_fill_done();
-        return Ok(SpliceResult::Closed);
+        return Ok(SpliceOutcome::Closed);
     }
 }
 
 impl<R, W: AsFd, S: Splicer> SpliceCtx<R, W, S> {
     #[inline]
-    pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<SpliceResult> {
+    pub(crate) fn try_splice_to_dest(&mut self, w: &W) -> io::Result<SpliceOutcome> {
         let bytes_remaining = self.bytes_read - self.bytes_written;
         if bytes_remaining == 0 {
             if self.is_source_done() {
                 // Source EOF'd and we've drained the pipe, so we're done.
                 self.pipe.set_drain_done();
-                return Ok(SpliceResult::Closed);
+                return Ok(SpliceOutcome::Closed);
             }
             // signal that we made no progress
-            return Ok(SpliceResult::NoProgress);
+            return Ok(SpliceOutcome::NoProgress);
         }
         let pipe_r = self
             .pipe
@@ -343,8 +343,8 @@ impl<R, W: AsFd, S: Splicer> SpliceCtx<R, W, S> {
             .splice_out(pipe_r, w, self.offset.off_out(), bytes_remaining)?;
         if n > 0 {
             self.bytes_written += n;
-            return Ok(SpliceResult::BytesWritten(n));
+            return Ok(SpliceOutcome::BytesWritten(n));
         }
-        return Ok(SpliceResult::NoProgress);
+        return Ok(SpliceOutcome::NoProgress);
     }
 }
