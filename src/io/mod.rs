@@ -13,6 +13,7 @@ use std::{fmt, io, ops};
 
 use crate::splice::{Live, SpliceCtx, SpliceOutcome, Splicer};
 use crate::transfer_report::TransferReport;
+use crate::{debug, trace};
 
 /// Zero-copy unidirectional I/O with `splice(2)`.
 ///
@@ -98,11 +99,13 @@ where
     pub async fn execute(mut self, r: &mut R, w: &mut W) -> TransferReport {
         let error = poll_fn(|cx| self.poll_execute(cx, r, w)).await.err();
 
-        TransferReport {
+        let report = TransferReport {
             tx: self.splicer.bytes_written(),
             rx: 0,
             error,
-        }
+        };
+        debug!(tx = report.tx, rx = report.rx, error = ?report.error, "splice transfer complete");
+        report
     }
 
     #[cfg_attr(
@@ -135,6 +138,7 @@ where
                 "loop",
                 splicer = ?self.splicer,
                 state = ?self.state,
+                bytes_written = self.splicer.bytes_written(),
             );
 
             if let TransferState::Finished { error } = &mut self.state {
@@ -154,17 +158,28 @@ where
                     // side-effect: try_io_read will clear the readiness state if it returns EAGAIN,
                     // so we won't busy loop
                     match r.try_io_read(|| self.splicer.try_splice_from_source(&*r)) {
-                        Ok(SpliceOutcome::Closed) => TransferState::Drain,
-                        Ok(SpliceOutcome::BytesWritten(_)) => TransferState::Fill,
+                        Ok(SpliceOutcome::Closed) => {
+                            trace!(from = "Fill", to = "Drain", reason = "source_closed");
+                            TransferState::Drain
+                        }
+                        Ok(SpliceOutcome::BytesWritten(n)) => {
+                            trace!(from = "Fill", to = "Fill", bytes = n);
+                            TransferState::Fill
+                        }
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             if self.pipe_has_data() {
+                                trace!(from = "Fill", to = "Drain", reason = "EAGAIN", pipe_has_data = true);
                                 TransferState::Drain
                             } else {
+                                trace!(from = "Fill", to = "Fill", reason = "EAGAIN", pipe_has_data = false);
                                 TransferState::Fill
                             }
                         }
                         // an unexpected error happened
-                        Err(e) => TransferState::faulted(e),
+                        Err(e) => {
+                            debug!(from = "Fill", to = "Finished", error = %e);
+                            TransferState::faulted(e)
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -174,19 +189,33 @@ where
                     // try to write, if EAGAIN then loop back and wait again
                     // side-effect: try_io_write will clear the readiness state if it returns EAGAIN, so we won't busy loop
                     match w.try_io_write(|| self.splicer.try_splice_to_dest(&*w)) {
-                        Ok(SpliceOutcome::Closed) => TransferState::finished(),
-                        Ok(SpliceOutcome::NoProgress) => TransferState::Fill,
-                        Ok(SpliceOutcome::BytesWritten(_)) => TransferState::Drain,
+                        Ok(SpliceOutcome::Closed) => {
+                            trace!(from = "Drain", to = "Finished", reason = "dest_closed");
+                            TransferState::finished()
+                        }
+                        Ok(SpliceOutcome::NoProgress) => {
+                            debug!(from = "Drain", to = "Fill", reason = "no_progress");
+                            TransferState::Fill
+                        }
+                        Ok(SpliceOutcome::BytesWritten(n)) => {
+                            trace!(from = "Drain", to = "Drain", bytes = n);
+                            TransferState::Drain
+                        }
                         // EAGAIN: stay in drain if the pipe has data, else go refill
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             if self.pipe_has_data() {
+                                trace!(from = "Drain", to = "Drain", reason = "EAGAIN", pipe_has_data = true);
                                 TransferState::Drain
                             } else {
+                                trace!(from = "Drain", to = "Fill", reason = "EAGAIN", pipe_has_data = false);
                                 TransferState::Fill
                             }
                         }
                         // an unexpected error happened
-                        Err(e) => TransferState::faulted(e),
+                        Err(e) => {
+                            debug!(from = "Drain", to = "Finished", error = %e);
+                            TransferState::faulted(e)
+                        }
                     }
                 }
                 // we guard and return above this match
@@ -233,11 +262,13 @@ where
     {
         let error = poll_fn(|cx| self.poll_execute(cx, sl, sr)).await.err();
 
-        TransferReport {
+        let report = TransferReport {
             tx: self.io_sl2sr.splicer.bytes_written(),
             rx: self.io_sr2sl.splicer.bytes_written(),
             error,
-        }
+        };
+        debug!(tx = report.tx, rx = report.rx, error = ?report.error, "bidi splice transfer complete");
+        report
     }
 
     #[cfg_attr(
